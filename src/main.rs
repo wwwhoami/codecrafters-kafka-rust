@@ -1,17 +1,51 @@
 use std::{
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     net::TcpListener,
 };
 
 use anyhow::Error;
 
 #[derive(Debug)]
+struct NullableString {
+    value: Option<String>,
+}
+
+impl NullableString {
+    fn to_be_bytes(&self) -> Vec<u8> {
+        if self.value.is_none() {
+            (-1_i16).to_be_bytes().to_vec() // -1 for empty string
+        } else {
+            let value = self.value.as_ref().unwrap();
+            let mut bytes = (value.len() as i16).to_be_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        }
+    }
+
+    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self, Error> {
+        let mut len_buf = [0u8; 2];
+        reader.read_exact(&mut len_buf)?;
+
+        let len = i16::from_be_bytes(len_buf);
+        if len < 0 {
+            Ok(NullableString { value: None })
+        } else {
+            let mut str_buf = vec![0u8; len as usize];
+            reader.read_exact(&mut str_buf)?;
+            Ok(NullableString {
+                value: Some(String::from_utf8(str_buf)?),
+            })
+        }
+    }
+}
+
+#[derive(Debug)]
 struct RequestHeaderV2 {
     request_api_key: i16,
     request_api_version: i16,
     correlation_id: i32,
-    client_id: String,
-    tag: String,
+    client_id: NullableString,
+    tag: NullableString,
 }
 
 impl RequestHeaderV2 {
@@ -21,53 +55,29 @@ impl RequestHeaderV2 {
         bytes.extend_from_slice(&self.request_api_version.to_be_bytes());
         bytes.extend_from_slice(&self.correlation_id.to_be_bytes());
 
-        if self.client_id.is_empty() {
-            bytes.extend_from_slice(&((-1_i16).to_be_bytes())); // -1 for empty client_id
-        } else {
-            bytes.extend_from_slice(&((self.client_id.len() as i16).to_be_bytes()));
-            bytes.extend_from_slice(self.client_id.as_bytes());
-        }
-
-        if self.tag.is_empty() {
-            bytes.extend_from_slice(&((-1_i16).to_be_bytes())); // -1 for empty tag
-        } else {
-            bytes.extend_from_slice(&((self.tag.len() as i16).to_be_bytes()));
-            bytes.extend_from_slice(self.tag.as_bytes());
-        }
+        bytes.extend_from_slice(&self.client_id.to_be_bytes());
+        bytes.extend_from_slice(&self.tag.to_be_bytes());
 
         bytes
     }
 
     fn from_be_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        let request_api_key = i16::from_be_bytes([bytes[0], bytes[1]]);
-        let request_api_version = i16::from_be_bytes([bytes[2], bytes[3]]);
-        let correlation_id = i32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let mut rdr = Cursor::new(bytes);
 
-        let client_id_length = match i16::from_be_bytes([bytes[8], bytes[9]]) {
-            ..-1 => 0,
-            n => n as usize,
-        };
-        let client_id_start = 10;
-        let client_id_end = client_id_start + client_id_length;
-        let client_id = if client_id_length == 0 {
-            String::new()
-        } else {
-            String::from_utf8(bytes[client_id_start..client_id_end].to_vec())?
-        };
+        let mut buf2 = [0u8; 2];
+        let mut buf4 = [0u8; 4];
 
-        let tag_length_start = client_id_end;
-        let tag_length =
-            match i16::from_be_bytes([bytes[tag_length_start], bytes[tag_length_start + 1]]) {
-                ..-1 => 0,
-                n => n as usize,
-            };
-        let tag_start = tag_length_start + 2;
-        let tag_end = tag_start + tag_length;
-        let tag = if tag_length == 0 {
-            String::new()
-        } else {
-            String::from_utf8(bytes[tag_start..tag_end].to_vec())?
-        };
+        rdr.read_exact(&mut buf2)?;
+        let request_api_key = i16::from_be_bytes(buf2);
+
+        rdr.read_exact(&mut buf2)?;
+        let request_api_version = i16::from_be_bytes(buf2);
+
+        rdr.read_exact(&mut buf4)?;
+        let correlation_id = i32::from_be_bytes(buf4);
+
+        let client_id = NullableString::from_be_bytes(&mut rdr)?;
+        let tag = NullableString::from_be_bytes(&mut rdr)?;
 
         Ok(RequestHeaderV2 {
             request_api_key,

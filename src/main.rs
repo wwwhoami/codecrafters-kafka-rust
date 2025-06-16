@@ -40,11 +40,39 @@ impl NullableString {
 }
 
 #[derive(Debug)]
+struct CompactString {
+    value: String,
+}
+
+impl CompactString {
+    fn to_be_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(self.value.len() as i32).to_be_bytes());
+        bytes.extend_from_slice(self.value.as_bytes());
+        bytes
+    }
+
+    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self, Error> {
+        let mut len_buf = [0u8; 4];
+        reader.read_exact(&mut len_buf)?;
+        let len = i32::from_be_bytes(len_buf);
+
+        let mut str_buf = vec![0u8; len as usize];
+        reader.read_exact(&mut str_buf)?;
+
+        Ok(CompactString {
+            value: String::from_utf8(str_buf)?,
+        })
+    }
+}
+
+#[derive(Debug)]
 struct RequestHeaderV2 {
     request_api_key: i16,
     request_api_version: i16,
     correlation_id: i32,
     client_id: NullableString,
+    // TODO: tag buffer should be raimplemented as COMPACT_ARRAY
     tag: NullableString,
 }
 
@@ -116,6 +144,64 @@ impl RequestV0 {
     }
 }
 
+#[derive(Debug)]
+struct ApiVersionsRequestHeaderV4 {
+    client_software_name: CompactString,
+    client_software_version: CompactString,
+}
+
+#[derive(Debug, Clone)]
+enum ErrorCode {
+    None = 0,
+    UnknownServerError = -1,
+    UnsupportedVersion = 35,
+}
+
+#[derive(Debug)]
+struct ApiVersionsResponseV4 {
+    error_code: ErrorCode,
+    api_versions: Vec<ApiVersion>,
+    throttle_time_ms: i32,
+}
+
+impl ApiVersionsResponseV4 {
+    fn to_be_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+
+        bytes.extend_from_slice(&(self.error_code.clone() as i16).to_be_bytes());
+        bytes.extend_from_slice(&(self.api_versions.len() as i32).to_be_bytes());
+        for version in &self.api_versions {
+            bytes.extend_from_slice(&version.api_key.to_be_bytes());
+            bytes.extend_from_slice(&version.min_version.to_be_bytes());
+            bytes.extend_from_slice(&version.max_version.to_be_bytes());
+        }
+        bytes.extend_from_slice(&self.throttle_time_ms.to_be_bytes());
+
+        bytes
+    }
+}
+
+#[derive(Debug)]
+struct ApiVersion {
+    api_key: i16,
+    min_version: i16,
+    max_version: i16,
+}
+
+enum ResponseApi {
+    ApiVersionsResponseV4(ApiVersionsResponseV4),
+}
+
+struct ResponseV0 {
+    message_size: i32,
+    header: ResponseHeaderV2,
+}
+
+struct ResponseHeaderV2 {
+    correlation_id: i32,
+    respone_api: ResponseApi,
+}
+
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:9092").expect("unable to bind to port");
 
@@ -141,7 +227,35 @@ fn main() {
                         };
 
                         println!("parsed request: {:?}", request);
-                        println!("request as bytes: {:?}", request.to_be_bytes());
+
+                        let responseApi = match request.header.request_api_key {
+                            18 => {
+                                // ApiVersionsRequest
+                                println!("Received ApiVersionsRequest");
+
+                                Ok(ApiVersionsResponseV4 {
+                                    error_code: ErrorCode::UnsupportedVersion,
+                                    api_versions: vec![ApiVersion {
+                                        api_key: 18,
+                                        min_version: 0,
+                                        max_version: 4,
+                                    }],
+                                    throttle_time_ms: 0,
+                                })
+                            }
+                            _ => Err(anyhow::anyhow!(
+                                "Unsupported API key: {}",
+                                request.header.request_api_key
+                            )),
+                        };
+
+                        if responseApi.is_err() {
+                            eprintln!(
+                                "error processing request: {}",
+                                responseApi.as_ref().err().unwrap()
+                            );
+                            continue;
+                        }
 
                         stream
                             .write_all(&request.message_size.to_be_bytes())
@@ -149,10 +263,10 @@ fn main() {
                         stream
                             .write_all(&request.header.correlation_id.to_be_bytes())
                             .expect("unable to write correlation_id to stream");
+                        stream
+                            .write_all(&responseApi.as_ref().unwrap().to_be_bytes())
+                            .expect("unable to write request_api_key to stream");
 
-                        // stream
-                        //     .write_all(&request.to_be_bytes())
-                        //     .expect("unable to write to stream");
                         stream.flush().expect("unable to flush stream");
                     }
                     Err(e) => {

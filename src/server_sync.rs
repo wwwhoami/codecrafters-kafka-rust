@@ -15,11 +15,11 @@ use crate::protocol::{
 
 use crate::Result;
 
-pub struct Server {
+pub struct ServerSync {
     address: SocketAddr,
 }
 
-impl Server {
+impl ServerSync {
     pub fn new(address: &str) -> Result<Self> {
         let socket_addr = std::net::SocketAddr::V4(address.parse()?);
 

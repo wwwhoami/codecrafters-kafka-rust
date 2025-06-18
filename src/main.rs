@@ -1,13 +1,11 @@
-use codecrafters_kafka::Server;
+use codecrafters_kafka::ServerAsync;
 
-fn main() {
-    let server = Server::new("127.0.0.1:9092").unwrap_or_else(|e| {
-        eprintln!("failed to create server: {}", e);
-        std::process::exit(1);
-    });
+#[tokio::main]
+async fn main() {
+    let server = ServerAsync::new("127.0.0.1:9092");
 
-    server.run().unwrap_or_else(|e| {
-        eprintln!("server error: {}", e);
+    server.run().await.unwrap_or_else(|e| {
+        eprintln!("server failed: {}", e);
         std::process::exit(1);
     });
 }

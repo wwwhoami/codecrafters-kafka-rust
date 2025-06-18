@@ -6,5 +6,8 @@ fn main() {
         std::process::exit(1);
     });
 
-    server.run();
+    server.run().unwrap_or_else(|e| {
+        eprintln!("server error: {}", e);
+        std::process::exit(1);
+    });
 }

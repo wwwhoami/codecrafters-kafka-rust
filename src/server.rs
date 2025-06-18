@@ -28,8 +28,9 @@ impl Server {
         })
     }
 
-    pub fn run(&self) {
-        let listener = TcpListener::bind(self.address).expect("unable to bind to port");
+    pub fn run(&self) -> Result<()> {
+        let listener = TcpListener::bind(self.address)
+            .map_err(|e| format!("failed to bind to address {}: {}", self.address, e))?;
 
         for stream in listener.incoming() {
             match stream {
@@ -41,23 +42,27 @@ impl Server {
                 }
             }
         }
+        Ok(())
     }
 
     fn handle_client(&self, mut stream: TcpStream) {
-        let request = match self.read_request(&mut stream) {
-            Ok(req) => req,
-            Err(e) => {
-                eprintln!("{}", e);
-                return;
+        loop {
+            let request = match self.read_request(&mut stream) {
+                Ok(req) => req,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    break;
+                }
+            };
+
+            println!("parsed request: {:?}", request);
+
+            let response = self.build_response(&request);
+
+            if let Err(e) = self.write_response(&mut stream, response) {
+                eprintln!("error writing response: {}", e);
+                break;
             }
-        };
-
-        println!("parsed request: {:?}", request);
-
-        let response = self.build_response(&request);
-
-        if let Err(e) = self.write_response(&mut stream, response) {
-            eprintln!("error writing response: {}", e);
         }
     }
 

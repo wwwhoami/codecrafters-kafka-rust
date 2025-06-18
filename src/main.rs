@@ -71,7 +71,7 @@ impl FromBytes for CompactString {
         let mut len_buf = [0u8; 1];
 
         if reader.read_exact(&mut len_buf).is_err() {
-            return Err(anyhow::anyhow!("Failed to read CompactString length"));
+            return Err(anyhow::anyhow!("failed to read CompactString length"));
         }
 
         // len_buf[0] is the length of the string, minus 1
@@ -136,24 +136,6 @@ where
                 Ok(CompactArray { array })
             }
         }
-
-        // if zero_len_buf[0] == 0 {
-        //     // If the first byte is 0, we treat it as an empty array
-        //     return Ok(CompactArray { array: Vec::new() });
-        // }
-        //
-        // // Else, we read the remaining length of the array
-        // reader.read_exact(&mut remaining_len_buf)?;
-        //
-        // let len_buf = [zero_len_buf[0], remaining_len_buf[0]];
-        // let len = u16::from_be_bytes(len_buf);
-        //
-        // let mut array = Vec::with_capacity(len as usize);
-        // for _ in 0..len {
-        //     array.push(T::from_be_bytes(reader)?);
-        // }
-        //
-        // Ok(CompactArray { array })
     }
 }
 
@@ -178,45 +160,42 @@ impl std::fmt::Display for UnsupportedApiKeyError {
 
 impl std::error::Error for UnsupportedApiKeyError {}
 
-// #[derive(Debug)]
-// enum RequestApiKey {
-//     Fetch = 1,
-//     ApiVersions = 18,
-// }
-//
-// impl ToBytes for RequestApiKey {
-//     fn to_be_bytes(&self) -> Vec<u8> {
-//         match self {
-//             RequestApiKey::Fetch => (1_i16).to_be_bytes().to_vec(),
-//             RequestApiKey::ApiVersions => (18_i16).to_be_bytes().to_vec(),
-//         }
-//     }
-// }
-//
-// impl FromBytes for RequestApiKey {
-//     fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self, Error> {
-//         let mut buf = [0u8; 2];
-//         reader.read_exact(&mut buf)?;
-//
-//         let key = i16::from_be_bytes(buf);
-//         match key {
-//             1 => Ok(RequestApiKey::Fetch),
-//             18 => Ok(RequestApiKey::ApiVersions),
-//             _ => Err(UnsupportedApiKeyError { key }.into()),
-//         }
-//     }
-// }
+#[derive(Debug)]
+enum RequestApiKey {
+    ApiVersions = 18,
+}
+
+impl ToBytes for RequestApiKey {
+    fn to_be_bytes(&self) -> Vec<u8> {
+        match self {
+            RequestApiKey::ApiVersions => (18_i16).to_be_bytes().to_vec(),
+        }
+    }
+}
+
+impl FromBytes for RequestApiKey {
+    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self, Error> {
+        let mut buf = [0u8; 2];
+        reader.read_exact(&mut buf)?;
+
+        let key = i16::from_be_bytes(buf);
+        match key {
+            18 => Ok(RequestApiKey::ApiVersions),
+            _ => Err(UnsupportedApiKeyError { key }.into()),
+        }
+    }
+}
 
 #[derive(Debug)]
 struct RequestHeaderV2 {
-    request_api_key: i16,
+    request_api_key: RequestApiKey,
     request_api_version: i16,
     correlation_id: i32,
     client_id: NullableString,
     tag: CompactArray<NullableString>,
 }
 
-impl RequestHeaderV2 {
+impl ToBytes for RequestHeaderV2 {
     fn to_be_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&self.request_api_key.to_be_bytes());
@@ -228,31 +207,30 @@ impl RequestHeaderV2 {
 
         bytes
     }
-
+}
+impl FromBytes for RequestHeaderV2 {
     fn from_be_bytes<R: std::io::Read>(mut reader: &mut R) -> Result<Self, Error> {
         let mut buf2 = [0u8; 2];
         let mut buf4 = [0u8; 4];
 
-        reader
-            .read_exact(&mut buf2)
-            .map_err(|e| anyhow::anyhow!("Failed to read request_api_key: {}", e))?;
-        let request_api_key = i16::from_be_bytes(buf2);
+        let request_api_key = RequestApiKey::from_be_bytes(&mut reader)
+            .map_err(|e| anyhow::anyhow!("failed to parse request_api_key: {}", e))?;
 
         reader
             .read_exact(&mut buf2)
-            .map_err(|e| anyhow::anyhow!("Failed to read request_api_version: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to read request_api_version: {}", e))?;
         let request_api_version = i16::from_be_bytes(buf2);
 
         reader
             .read_exact(&mut buf4)
-            .map_err(|e| anyhow::anyhow!("Failed to read correlation_id: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to read correlation_id: {}", e))?;
         let correlation_id = i32::from_be_bytes(buf4);
 
         let client_id = NullableString::from_be_bytes(&mut reader)
-            .map_err(|e| anyhow::anyhow!("Failed to parse NullableString for client_id: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to parse NullableString for client_id: {}", e))?;
         let tag = CompactArray::<NullableString>::from_be_bytes(&mut reader).map_err(|e| {
             anyhow::anyhow!(
-                "Failed to parse CompactArray<NullableString> for tag: {}",
+                "failed to parse CompactArray<NullableString> for tag: {}",
                 e
             )
         })?;
@@ -270,7 +248,6 @@ impl RequestHeaderV2 {
 #[derive(Debug)]
 enum RequestBody {
     ApiVersionsRequestV4(ApiVersionsRequestV4),
-    UnsupportedApiKey(UnsupportedApiKeyError),
 }
 
 #[derive(Debug)]
@@ -280,22 +257,7 @@ struct RequestV0 {
     body: RequestBody,
 }
 
-#[derive(Debug, Clone)]
-enum BodyError {
-    UnsupportedApiKey,
-}
-
-impl std::error::Error for BodyError {}
-
-impl std::fmt::Display for BodyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BodyError::UnsupportedApiKey => write!(f, "unsupported API key"),
-        }
-    }
-}
-
-impl RequestV0 {
+impl ToBytes for RequestV0 {
     fn to_be_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -304,28 +266,26 @@ impl RequestV0 {
 
         bytes
     }
+}
 
-    fn from_be_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        let mut rdr = Cursor::new(bytes);
-
+impl FromBytes for RequestV0 {
+    fn from_be_bytes<R: std::io::Read>(mut reader: &mut R) -> Result<Self, Error> {
         let mut buf4 = [0u8; 4];
 
-        rdr.read_exact(&mut buf4)
-            .map_err(|e| anyhow::anyhow!("Failed to read message size: {}", e))?;
+        reader
+            .read_exact(&mut buf4)
+            .map_err(|e| anyhow::anyhow!("failed to read message size: {}", e))?;
 
         let message_size = i32::from_be_bytes(buf4);
 
-        let header = RequestHeaderV2::from_be_bytes(&mut rdr)
-            .map_err(|e| anyhow::anyhow!("Failed to parse RequestHeaderV2: {}", e))?;
+        let header = RequestHeaderV2::from_be_bytes(&mut reader)
+            .map_err(|e| anyhow::anyhow!("failed to parse RequestHeaderV2: {}", e))?;
 
         let body = match header.request_api_key {
-            18 => RequestBody::ApiVersionsRequestV4(
-                ApiVersionsRequestV4::from_be_bytes(&mut rdr)
-                    .map_err(|e| anyhow::anyhow!("Failed to parse ApiVersionsRequestV4: {}", e))?,
+            RequestApiKey::ApiVersions => RequestBody::ApiVersionsRequestV4(
+                ApiVersionsRequestV4::from_be_bytes(&mut reader)
+                    .map_err(|e| anyhow::anyhow!("failed to parse ApiVersionsRequestV4: {}", e))?,
             ),
-            _ => RequestBody::UnsupportedApiKey(UnsupportedApiKeyError {
-                key: header.request_api_key,
-            }),
         };
 
         Ok(RequestV0 {
@@ -347,19 +307,19 @@ impl FromBytes for ApiVersionsRequestV4 {
     fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self, Error> {
         let client_software_name = CompactString::from_be_bytes(reader).map_err(|e| {
             anyhow::anyhow!(
-                "Failed to parse CompactString for client_software_name: {}",
+                "failed to parse CompactString for client_software_name: {}",
                 e
             )
         })?;
         let client_software_version = CompactString::from_be_bytes(reader).map_err(|e| {
             anyhow::anyhow!(
-                "Failed to parse CompactString for client_software_version: {}",
+                "failed to parse CompactString for client_software_version: {}",
                 e
             )
         })?;
         let tag = CompactArray::<NullableString>::from_be_bytes(reader).map_err(|e| {
             anyhow::anyhow!(
-                "Failed to parse CompactArray<NullableString> for tag: {}",
+                "failed to parse CompactArray<NullableString> for tag: {}",
                 e
             )
         })?;
@@ -482,7 +442,8 @@ fn main() {
                     Ok(n) => {
                         println!("received {} bytes from client", n);
 
-                        let request = match RequestV0::from_be_bytes(&buf[..n]) {
+                        let rdr = &mut Cursor::new(&buf[..n]);
+                        let request = match RequestV0::from_be_bytes(rdr) {
                             Ok(req) => req,
                             Err(e) => {
                                 eprintln!("error parsing request: {}", e);
@@ -492,22 +453,19 @@ fn main() {
                         println!("parsed request: {:?}", request);
 
                         let response_body = match request.header.request_api_version {
-                            4 => {
-                                // RequestApiKey::ApiVersions
-                                ApiVersionsResponseBodyV4 {
-                                    error_code: ErrorCode::None,
-                                    api_versions: CompactArray {
-                                        array: vec![ApiVersion {
-                                            api_key: 18,
-                                            min_version: 0,
-                                            max_version: 4,
-                                            tag: CompactArray { array: vec![] },
-                                        }],
-                                    },
-                                    throttle_time_ms: 0,
-                                    tag: CompactArray { array: vec![] },
-                                }
-                            }
+                            4 => ApiVersionsResponseBodyV4 {
+                                error_code: ErrorCode::None,
+                                api_versions: CompactArray {
+                                    array: vec![ApiVersion {
+                                        api_key: 18,
+                                        min_version: 0,
+                                        max_version: 4,
+                                        tag: CompactArray { array: vec![] },
+                                    }],
+                                },
+                                throttle_time_ms: 0,
+                                tag: CompactArray { array: vec![] },
+                            },
                             _ => ApiVersionsResponseBodyV4 {
                                 error_code: ErrorCode::UnsupportedVersion,
                                 api_versions: CompactArray { array: vec![] },
@@ -530,11 +488,6 @@ fn main() {
                             .write_all(&response.to_be_bytes())
                             .expect("unable to write response to stream");
                         stream.flush().expect("unable to flush stream");
-
-                        // println!("response message_size: {:?}", response.message_size);
-                        // println!("response sent to client: {:?}", response);
-                        // println!("response size: {}", response.to_be_bytes().len());
-                        // println!("response as bytes: {:?}", response.to_be_bytes());
                     }
                     Err(e) => {
                         eprintln!("error reading from stream: {}", e);

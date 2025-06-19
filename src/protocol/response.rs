@@ -1,6 +1,6 @@
 use super::{
     bytes::ToBytes,
-    primitives::{CompactArray, NullableString},
+    primitives::{ApiKey, CompactArray, NullableString},
 };
 
 #[derive(Debug, Clone)]
@@ -110,7 +110,7 @@ impl ToBytes for ApiVersionsResponseBodyV4 {
 
 #[derive(Debug)]
 pub struct ApiVersion {
-    api_key: i16,
+    api_key: ApiKey,
     min_version: i16,
     max_version: i16,
     tag: CompactArray<NullableString>,
@@ -118,7 +118,7 @@ pub struct ApiVersion {
 
 impl ApiVersion {
     pub fn new(
-        api_key: i16,
+        api_key: ApiKey,
         min_version: i16,
         max_version: i16,
         tag: CompactArray<NullableString>,

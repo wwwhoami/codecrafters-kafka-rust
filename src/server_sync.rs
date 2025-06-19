@@ -1,11 +1,11 @@
 use std::{
-    io::{Cursor, Read, Write},
+    io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
 };
 
 use crate::protocol::{
     bytes::{FromBytes, ToBytes},
-    primitives::CompactArray,
+    primitives::{ApiKey, CompactArray},
     request::RequestV0,
     response::{
         ApiVersion, ApiVersionsResponseBodyV4, ErrorCode, ResponseBody, ResponseHeaderV2,
@@ -15,79 +15,100 @@ use crate::protocol::{
 
 use crate::Result;
 
+#[derive(Debug, Clone)]
 pub struct ServerSync {
-    address: SocketAddr,
+    address: String,
 }
 
 impl ServerSync {
-    pub fn new(address: &str) -> Result<Self> {
-        let socket_addr = std::net::SocketAddr::V4(address.parse()?);
-
-        Ok(Self {
-            address: socket_addr,
-        })
+    pub fn new(address: &str) -> Self {
+        Self {
+            address: address.to_string(),
+        }
     }
 
     pub fn run(&self) -> Result<()> {
-        let listener = TcpListener::bind(self.address)
+        let listener = TcpListener::bind(&self.address)
             .map_err(|e| format!("failed to bind to address {}: {}", self.address, e))?;
 
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    self.handle_client(stream);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let conn = Connection::new(stream)?;
+                    conn.handle();
                 }
                 Err(e) => {
-                    eprintln!("error: {}", e);
+                    eprintln!("failed to accept connection: {}", e);
                 }
             }
         }
-        Ok(())
+    }
+}
+
+struct Connection {
+    stream: TcpStream,
+    peer_addr: SocketAddr,
+}
+
+impl Connection {
+    fn new(stream: TcpStream) -> Result<Self> {
+        let peer_addr = stream.peer_addr()?;
+        Ok(Connection { stream, peer_addr })
     }
 
-    fn handle_client(&self, mut stream: TcpStream) {
+    fn write_response(&mut self, response: ResponseV0) -> std::io::Result<()> {
+        self.stream.write_all(&response.to_be_bytes())?;
+        self.stream.flush()
+    }
+
+    fn handle(mut self) {
         loop {
-            let request = match self.read_request(&mut stream) {
+            let request = match self.read_request() {
                 Ok(req) => req,
                 Err(e) => {
-                    eprintln!("{}", e);
-                    break;
+                    eprintln!("client {}: error reading request: {}", self.peer_addr, e);
+                    return;
                 }
             };
 
-            println!("parsed request: {:?}", request);
+            println!("client {}: parsed request: {:?}", self.peer_addr, request);
 
             let response = self.build_response(&request);
 
-            if let Err(e) = self.write_response(&mut stream, response) {
-                eprintln!("error writing response: {}", e);
-                break;
+            if let Err(e) = self.write_response(response) {
+                eprintln!("error writing response to client {}: {}", self.peer_addr, e);
+                return;
             }
         }
     }
 
-    fn read_request(&self, stream: &mut TcpStream) -> Result<RequestV0> {
+    fn read_request(&mut self) -> Result<RequestV0> {
         let mut buf = [0; 1024];
-        let n = stream
-            .read(&mut buf)
-            .map_err(|e| format!("error reading from stream: {}", e))?;
-
+        let n = self.stream.read(&mut buf)?;
         if n == 0 {
-            return Err("connection closed by client".into());
+            return Err(("connection closed").into());
         }
 
-        println!("received {} bytes from client", n);
+        println!("client {}: received {} bytes", self.peer_addr, n);
 
-        let rdr = &mut Cursor::new(&buf[..n]);
-        RequestV0::from_be_bytes(rdr).map_err(|e| format!("error parsing request: {}", e).into())
+        let rdr = &mut std::io::Cursor::new(&buf[..n]);
+
+        RequestV0::from_be_bytes(rdr)
     }
 
     fn build_response(&self, request: &RequestV0) -> ResponseV0 {
-        let response_header = ResponseHeaderV2::new(request.header().correlation_id());
         let response_body = match request.header().request_api_version() {
             0..=4 => ApiVersionsResponseBodyV4::new(
                 ErrorCode::None,
-                CompactArray::new(vec![ApiVersion::new(18, 0, 4, CompactArray::new(vec![]))]),
+                CompactArray::new(vec![
+                    ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::new(vec![])),
+                    ApiVersion::new(
+                        ApiKey::DescribeTopicPartitions,
+                        0,
+                        0,
+                        CompactArray::new(vec![]),
+                    ),
+                ]),
                 0,
                 CompactArray::new(vec![]),
             ),
@@ -98,20 +119,12 @@ impl ServerSync {
                 CompactArray::new(vec![]),
             ),
         };
-        let message_size =
-            response_body.to_be_bytes().len() as i32 + response_header.to_be_bytes().len() as i32;
 
+        let response_header = ResponseHeaderV2::new(request.header().correlation_id());
         ResponseV0::new(
-            message_size,
+            response_body.to_be_bytes().len() as i32 + response_header.to_be_bytes().len() as i32,
             response_header,
             ResponseBody::ApiVersionsResponseV4(response_body),
         )
-    }
-
-    fn write_response(&self, stream: &mut TcpStream, response: ResponseV0) -> std::io::Result<()> {
-        println!("sending response: {:?}", response);
-
-        stream.write_all(&response.to_be_bytes())?;
-        stream.flush()
     }
 }

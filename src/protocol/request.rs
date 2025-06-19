@@ -2,39 +2,12 @@ use crate::Result;
 
 use super::{
     bytes::{FromBytes, ToBytes},
-    error,
-    primitives::{CompactArray, CompactString, NullableString},
+    primitives::{ApiKey, CompactArray, CompactString, NullableString},
 };
 
 #[derive(Debug)]
-enum RequestApiKey {
-    ApiVersions = 18,
-}
-
-impl ToBytes for RequestApiKey {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        match self {
-            RequestApiKey::ApiVersions => (18_i16).to_be_bytes().to_vec(),
-        }
-    }
-}
-
-impl FromBytes for RequestApiKey {
-    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
-        let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf)?;
-
-        let key = i16::from_be_bytes(buf);
-        match key {
-            18 => Ok(RequestApiKey::ApiVersions),
-            _ => Err(error::UnsupportedApiKeyError::new(key).into()),
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct RequestHeaderV2 {
-    request_api_key: RequestApiKey,
+    request_api_key: ApiKey,
     request_api_version: i16,
     correlation_id: i32,
     client_id: NullableString,
@@ -69,7 +42,7 @@ impl FromBytes for RequestHeaderV2 {
         let mut buf2 = [0u8; 2];
         let mut buf4 = [0u8; 4];
 
-        let request_api_key = RequestApiKey::from_be_bytes(&mut reader)
+        let request_api_key = ApiKey::from_be_bytes(&mut reader)
             .map_err(|e| anyhow::anyhow!("failed to parse request_api_key: {}", e))?;
 
         reader
@@ -144,10 +117,16 @@ impl FromBytes for RequestV0 {
             .map_err(|e| anyhow::anyhow!("failed to parse RequestHeaderV2: {}", e))?;
 
         let body = match header.request_api_key {
-            RequestApiKey::ApiVersions => RequestBody::ApiVersionsRequestV4(
+            ApiKey::ApiVersions => RequestBody::ApiVersionsRequestV4(
                 ApiVersionsRequestV4::from_be_bytes(&mut reader)
                     .map_err(|e| anyhow::anyhow!("failed to parse ApiVersionsRequestV4: {}", e))?,
             ),
+            ApiKey::DescribeTopicPartitions => {
+                // Placeholder for future request body parsing
+                return Err(
+                    anyhow::anyhow!("DescribeTopicPartitions request not implemented").into(),
+                );
+            }
         };
 
         Ok(RequestV0 {

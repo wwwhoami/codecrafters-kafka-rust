@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -5,7 +7,7 @@ use tokio::{
 
 use crate::protocol::{
     bytes::{FromBytes, ToBytes},
-    primitives::CompactArray,
+    primitives::{ApiKey, CompactArray},
     request::RequestV0,
     response::{
         ApiVersion, ApiVersionsResponseBodyV4, ErrorCode, ResponseBody, ResponseHeaderV2,
@@ -35,9 +37,10 @@ impl ServerAsync {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    let server = self.clone();
+                    let conn = Connection::new(stream).await?;
+
                     tokio::spawn(async move {
-                        server.handle_client(stream).await;
+                        conn.handle().await;
                     });
                 }
                 Err(e) => {
@@ -46,47 +49,72 @@ impl ServerAsync {
             }
         }
     }
+}
 
-    async fn handle_client(&self, mut stream: TcpStream) {
+struct Connection {
+    stream: TcpStream,
+    peer_addr: SocketAddr,
+}
+
+impl Connection {
+    async fn new(stream: TcpStream) -> Result<Self> {
+        let peer_addr = stream.peer_addr()?;
+        Ok(Connection { stream, peer_addr })
+    }
+
+    async fn write_response(&mut self, response: ResponseV0) -> std::io::Result<()> {
+        self.stream.write_all(&response.to_be_bytes()).await?;
+        self.stream.flush().await
+    }
+
+    async fn handle(mut self) {
         loop {
-            let request = match self.read_request(&mut stream).await {
+            let request = match self.read_request().await {
                 Ok(req) => req,
                 Err(e) => {
-                    eprintln!("{}", e);
+                    eprintln!("client {}: error reading request: {}", self.peer_addr, e);
                     return;
                 }
             };
 
-            println!("parsed request: {:?}", request);
+            println!("client {}: parsed request: {:?}", self.peer_addr, request);
 
             let response = self.build_response(&request);
 
-            if let Err(e) = self.write_response(&mut stream, response).await {
-                eprintln!("error writing response: {}", e);
+            if let Err(e) = self.write_response(response).await {
+                eprintln!("error writing response to client {}: {}", self.peer_addr, e);
+                return;
             }
         }
     }
 
-    async fn read_request(&self, stream: &mut TcpStream) -> Result<RequestV0> {
+    async fn read_request(&mut self) -> Result<RequestV0> {
         let mut buf = [0; 1024];
-        let n = stream
-            .read(&mut buf)
-            .await
-            .map_err(|e| format!("error reading from stream: {}", e))?;
+        let n = self.stream.read(&mut buf).await?;
         if n == 0 {
-            return Err("connection closed by client".into());
+            return Err(("connection closed").into());
         }
-        println!("received {} bytes from client", n);
+
+        println!("client {}: received {} bytes", self.peer_addr, n);
 
         let rdr = &mut std::io::Cursor::new(&buf[..n]);
-        RequestV0::from_be_bytes(rdr).map_err(|e| format!("failed to parse request: {}", e).into())
+
+        RequestV0::from_be_bytes(rdr)
     }
 
     fn build_response(&self, request: &RequestV0) -> ResponseV0 {
         let response_body = match request.header().request_api_version() {
             0..=4 => ApiVersionsResponseBodyV4::new(
                 ErrorCode::None,
-                CompactArray::new(vec![ApiVersion::new(18, 0, 4, CompactArray::new(vec![]))]),
+                CompactArray::new(vec![
+                    ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::new(vec![])),
+                    ApiVersion::new(
+                        ApiKey::DescribeTopicPartitions,
+                        0,
+                        0,
+                        CompactArray::new(vec![]),
+                    ),
+                ]),
                 0,
                 CompactArray::new(vec![]),
             ),
@@ -104,14 +132,5 @@ impl ServerAsync {
             response_header,
             ResponseBody::ApiVersionsResponseV4(response_body),
         )
-    }
-
-    async fn write_response(
-        &self,
-        stream: &mut TcpStream,
-        response: ResponseV0,
-    ) -> std::io::Result<()> {
-        stream.write_all(&response.to_be_bytes()).await?;
-        stream.flush().await
     }
 }

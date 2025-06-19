@@ -2,8 +2,37 @@ use crate::Result;
 
 use super::{
     bytes::{FromBytes, ToBytes},
-    error::IoError,
+    error::{self, IoError},
 };
+
+#[derive(Debug)]
+pub(crate) enum ApiKey {
+    ApiVersions = 18,
+    DescribeTopicPartitions = 75,
+}
+
+impl ToBytes for ApiKey {
+    fn to_be_bytes(&self) -> Vec<u8> {
+        match self {
+            ApiKey::ApiVersions => (18_i16).to_be_bytes().to_vec(),
+            ApiKey::DescribeTopicPartitions => (75_i16).to_be_bytes().to_vec(),
+        }
+    }
+}
+
+impl FromBytes for ApiKey {
+    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
+        let mut buf = [0u8; 2];
+        reader.read_exact(&mut buf)?;
+
+        let key = i16::from_be_bytes(buf);
+        match key {
+            18 => Ok(ApiKey::ApiVersions),
+            75 => Ok(ApiKey::DescribeTopicPartitions),
+            _ => Err(error::UnsupportedApiKeyError::new(key).into()),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct NullableString {

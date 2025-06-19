@@ -22,6 +22,10 @@ impl RequestHeaderV2 {
     pub fn correlation_id(&self) -> i32 {
         self.correlation_id
     }
+
+    pub fn request_api_key(&self) -> &ApiKey {
+        &self.request_api_key
+    }
 }
 
 impl ToBytes for RequestHeaderV2 {
@@ -77,6 +81,19 @@ impl FromBytes for RequestHeaderV2 {
 #[derive(Debug)]
 pub enum RequestBody {
     ApiVersionsRequestV4(ApiVersionsRequestV4),
+    DescribeTopicPartitionsRequestV0(DescribeTopicPartitionsRequestV0),
+}
+
+impl RequestBody {
+    pub fn as_describe_topic_partitions_request_v0(
+        &self,
+    ) -> Option<&DescribeTopicPartitionsRequestV0> {
+        if let Self::DescribeTopicPartitionsRequestV0(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -89,6 +106,10 @@ pub struct RequestV0 {
 impl RequestV0 {
     pub fn header(&self) -> &RequestHeaderV2 {
         &self.header
+    }
+
+    pub fn body(&self) -> &RequestBody {
+        &self.body
     }
 }
 
@@ -121,12 +142,11 @@ impl FromBytes for RequestV0 {
                 ApiVersionsRequestV4::from_be_bytes(&mut reader)
                     .map_err(|e| anyhow::anyhow!("failed to parse ApiVersionsRequestV4: {}", e))?,
             ),
-            ApiKey::DescribeTopicPartitions => {
-                // Placeholder for future request body parsing
-                return Err(
-                    anyhow::anyhow!("DescribeTopicPartitions request not implemented").into(),
-                );
-            }
+            ApiKey::DescribeTopicPartitions => RequestBody::DescribeTopicPartitionsRequestV0(
+                DescribeTopicPartitionsRequestV0::from_be_bytes(&mut reader).map_err(|e| {
+                    anyhow::anyhow!("failed to parse DescribeTopicPartitionsRequestV0: {}", e)
+                })?,
+            ),
         };
 
         Ok(RequestV0 {
@@ -170,5 +190,80 @@ impl FromBytes for ApiVersionsRequestV4 {
             client_software_version,
             tag,
         })
+    }
+}
+
+#[derive(Debug)]
+pub struct DescribeTopicPartitionsRequestV0 {
+    topics: CompactArray<Topic>,
+    response_partiotion_limit: i32,
+    cursor: u8,
+    tag: CompactArray<NullableString>,
+}
+
+impl DescribeTopicPartitionsRequestV0 {
+    pub fn topics(&self) -> &CompactArray<Topic> {
+        &self.topics
+    }
+}
+
+impl FromBytes for DescribeTopicPartitionsRequestV0 {
+    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
+        let topics = CompactArray::<Topic>::from_be_bytes(reader).map_err(|e| {
+            anyhow::anyhow!("failed to parse CompactArray<Topic> for topics: {}", e)
+        })?;
+
+        let mut buf4 = [0u8; 4];
+        reader
+            .read_exact(&mut buf4)
+            .map_err(|e| anyhow::anyhow!("failed to read response_partition_limit: {}", e))?;
+        let response_partition_limit = i32::from_be_bytes(buf4);
+
+        let mut buf1 = [0u8; 1];
+        reader
+            .read_exact(&mut buf1)
+            .map_err(|e| anyhow::anyhow!("failed to read cursor: {}", e))?;
+        let cursor = buf1[0];
+
+        let tag = CompactArray::<NullableString>::from_be_bytes(reader).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to parse CompactArray<NullableString> for tag: {}",
+                e
+            )
+        })?;
+
+        Ok(DescribeTopicPartitionsRequestV0 {
+            topics,
+            response_partiotion_limit: response_partition_limit,
+            cursor,
+            tag,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Topic {
+    topic: CompactString,
+    tag: CompactArray<NullableString>,
+}
+
+impl Topic {
+    pub fn topic(&self) -> &str {
+        &self.topic.as_str()
+    }
+}
+
+impl FromBytes for Topic {
+    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
+        let topic = CompactString::from_be_bytes(reader)
+            .map_err(|e| anyhow::anyhow!("failed to parse CompactString for topic: {}", e))?;
+        let tag = CompactArray::<NullableString>::from_be_bytes(reader).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to parse CompactArray<NullableString> for tag: {}",
+                e
+            )
+        })?;
+
+        Ok(Topic { topic, tag })
     }
 }

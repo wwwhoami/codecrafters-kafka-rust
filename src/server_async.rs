@@ -4,14 +4,15 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
+use uuid::Uuid;
 
 use crate::protocol::{
     bytes::{FromBytes, ToBytes},
-    primitives::{ApiKey, CompactArray},
+    primitives::{ApiKey, CompactArray, CompactString},
     request::RequestV0,
     response::{
-        ApiVersion, ApiVersionsResponseBodyV4, ErrorCode, ResponseBody, ResponseHeaderV2,
-        ResponseV0,
+        ApiVersion, ApiVersionsResponseBodyV4, DescribeTopicPartiotionsResponseBodyV0, ErrorCode,
+        ResponseBody, ResponseHeader, ResponseHeaderV0, ResponseHeaderV1, ResponseV0, Topic,
     },
 };
 
@@ -64,7 +65,11 @@ impl Connection {
 
     async fn write_response(&mut self, response: ResponseV0) -> std::io::Result<()> {
         self.stream.write_all(&response.to_be_bytes()).await?;
-        self.stream.flush().await
+        self.stream.flush().await?;
+
+        println!("client {}: sent response: {:?}", self.peer_addr, response);
+
+        Ok(())
     }
 
     async fn handle(mut self) {
@@ -103,34 +108,73 @@ impl Connection {
     }
 
     fn build_response(&self, request: &RequestV0) -> ResponseV0 {
-        let response_body = match request.header().request_api_version() {
-            0..=4 => ApiVersionsResponseBodyV4::new(
-                ErrorCode::None,
-                CompactArray::new(vec![
-                    ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::new(vec![])),
-                    ApiVersion::new(
-                        ApiKey::DescribeTopicPartitions,
+        let response_body = match request.header().request_api_key() {
+            ApiKey::ApiVersions => match request.header().request_api_version() {
+                0..=4 => ResponseBody::ApiVersionsResponseV4(ApiVersionsResponseBodyV4::new(
+                    ErrorCode::None,
+                    CompactArray::new(vec![
+                        ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::new(vec![])),
+                        ApiVersion::new(
+                            ApiKey::DescribeTopicPartitions,
+                            0,
+                            0,
+                            CompactArray::new(vec![]),
+                        ),
+                    ]),
+                    0,
+                    CompactArray::new(vec![]),
+                )),
+                _ => ResponseBody::ApiVersionsResponseV4(ApiVersionsResponseBodyV4::new(
+                    ErrorCode::UnsupportedVersion,
+                    CompactArray::new(vec![]),
+                    0,
+                    CompactArray::new(vec![]),
+                )),
+            },
+            ApiKey::DescribeTopicPartitions => {
+                let topic_name = request
+                    .body()
+                    .as_describe_topic_partitions_request_v0()
+                    .unwrap()
+                    .topics()
+                    .to_vec()
+                    .first()
+                    .unwrap()
+                    .topic()
+                    .to_string();
+
+                ResponseBody::DescribeTopicPartiotionsResponseV0(
+                    DescribeTopicPartiotionsResponseBodyV0::new(
                         0,
-                        0,
+                        CompactArray::new(vec![Topic::new(
+                            ErrorCode::UnknownTopicOrPartition,
+                            CompactString::from_str(topic_name.as_str()),
+                            Uuid::nil(),
+                            false,
+                            CompactArray::new(vec![]),
+                            [0, 0, 0, 0],
+                            CompactArray::new(vec![]),
+                        )]),
+                        u8::MAX,
                         CompactArray::new(vec![]),
                     ),
-                ]),
-                0,
-                CompactArray::new(vec![]),
-            ),
-            _ => ApiVersionsResponseBodyV4::new(
-                ErrorCode::UnsupportedVersion,
-                CompactArray::new(vec![]),
-                0,
-                CompactArray::new(vec![]),
-            ),
+                )
+            }
         };
 
-        let response_header = ResponseHeaderV2::new(request.header().correlation_id());
+        let response_header = match request.header().request_api_key() {
+            ApiKey::ApiVersions => {
+                ResponseHeader::V0(ResponseHeaderV0::new(request.header().correlation_id()))
+            }
+            ApiKey::DescribeTopicPartitions => {
+                ResponseHeader::V1(ResponseHeaderV1::new(request.header().correlation_id()))
+            }
+        };
+
         ResponseV0::new(
             response_body.to_be_bytes().len() as i32 + response_header.to_be_bytes().len() as i32,
             response_header,
-            ResponseBody::ApiVersionsResponseV4(response_body),
+            response_body,
         )
     }
 }

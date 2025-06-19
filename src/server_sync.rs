@@ -8,8 +8,8 @@ use crate::protocol::{
     primitives::{ApiKey, CompactArray},
     request::RequestV0,
     response::{
-        ApiVersion, ApiVersionsResponseBodyV4, ErrorCode, ResponseBody, ResponseHeaderV2,
-        ResponseV0,
+        ApiVersion, ApiVersionsResponseBodyV4, ErrorCode, ResponseBody, ResponseHeader,
+        ResponseHeaderV1, ResponseV0,
     },
 };
 
@@ -120,10 +120,10 @@ impl Connection {
             ),
         };
 
-        let response_header = ResponseHeaderV2::new(request.header().correlation_id());
+        let response_header = ResponseHeaderV1::new(request.header().correlation_id());
         ResponseV0::new(
             response_body.to_be_bytes().len() as i32 + response_header.to_be_bytes().len() as i32,
-            response_header,
+            ResponseHeader::V1(response_header),
             ResponseBody::ApiVersionsResponseV4(response_body),
         )
     }

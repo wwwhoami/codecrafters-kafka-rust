@@ -34,7 +34,7 @@ impl FromBytes for ApiKey {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NullableString {
     value: Option<String>,
 }
@@ -72,9 +72,25 @@ impl FromBytes for NullableString {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompactString {
     value: String,
+}
+
+impl CompactString {
+    pub fn new(value: String) -> Self {
+        Self { value }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        Self {
+            value: value.to_string(),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
 }
 
 impl ToBytes for CompactString {
@@ -115,7 +131,7 @@ impl FromBytes for CompactString {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompactArray<T> {
     array: Vec<T>,
 }
@@ -123,6 +139,17 @@ pub struct CompactArray<T> {
 impl<T> CompactArray<T> {
     pub fn new(array: Vec<T>) -> Self {
         Self { array }
+    }
+
+    pub fn default() -> Self {
+        Self { array: Vec::new() }
+    }
+
+    pub fn to_vec(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.array.clone()
     }
 }
 

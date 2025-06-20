@@ -1,3 +1,5 @@
+use bytes::Buf;
+
 use crate::Result;
 
 use super::{
@@ -42,26 +44,21 @@ impl ToBytes for RequestHeaderV2 {
     }
 }
 impl FromBytes for RequestHeaderV2 {
-    fn from_be_bytes<R: std::io::Read>(mut reader: &mut R) -> Result<Self> {
-        let mut buf2 = [0u8; 2];
-        let mut buf4 = [0u8; 4];
-
-        let request_api_key = ApiKey::from_be_bytes(&mut reader)
+    fn from_be_bytes<B: Buf>(mut buf: &mut B) -> Result<Self> {
+        let request_api_key = ApiKey::from_be_bytes(&mut buf)
             .map_err(|e| anyhow::anyhow!("failed to parse request_api_key: {}", e))?;
 
-        reader
-            .read_exact(&mut buf2)
-            .map_err(|e| anyhow::anyhow!("failed to read request_api_version: {}", e))?;
-        let request_api_version = i16::from_be_bytes(buf2);
+        let request_api_version = buf
+            .try_get_i16()
+            .map_err(|e| anyhow::anyhow!("failed to parse i16 for request_api_version: {}", e))?;
 
-        reader
-            .read_exact(&mut buf4)
-            .map_err(|e| anyhow::anyhow!("failed to read correlation_id: {}", e))?;
-        let correlation_id = i32::from_be_bytes(buf4);
+        let correlation_id = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for correlation_id: {}", e))?;
 
-        let client_id = NullableString::from_be_bytes(&mut reader)
+        let client_id = NullableString::from_be_bytes(&mut buf)
             .map_err(|e| anyhow::anyhow!("failed to parse NullableString for client_id: {}", e))?;
-        let tag = CompactArray::<NullableString>::from_be_bytes(&mut reader).map_err(|e| {
+        let tag = CompactArray::<NullableString>::from_be_bytes(&mut buf).map_err(|e| {
             anyhow::anyhow!(
                 "failed to parse CompactArray<NullableString> for tag: {}",
                 e
@@ -125,25 +122,21 @@ impl ToBytes for RequestV0 {
 }
 
 impl FromBytes for RequestV0 {
-    fn from_be_bytes<R: std::io::Read>(mut reader: &mut R) -> Result<Self> {
-        let mut buf4 = [0u8; 4];
+    fn from_be_bytes<B: bytes::Buf>(mut buf: &mut B) -> Result<Self> {
+        let message_size = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for message_size: {}", e))?;
 
-        reader
-            .read_exact(&mut buf4)
-            .map_err(|e| anyhow::anyhow!("failed to read message size: {}", e))?;
-
-        let message_size = i32::from_be_bytes(buf4);
-
-        let header = RequestHeaderV2::from_be_bytes(&mut reader)
+        let header = RequestHeaderV2::from_be_bytes(&mut buf)
             .map_err(|e| anyhow::anyhow!("failed to parse RequestHeaderV2: {}", e))?;
 
         let body = match header.request_api_key {
             ApiKey::ApiVersions => RequestBody::ApiVersionsRequestV4(
-                ApiVersionsRequestV4::from_be_bytes(&mut reader)
+                ApiVersionsRequestV4::from_be_bytes(&mut buf)
                     .map_err(|e| anyhow::anyhow!("failed to parse ApiVersionsRequestV4: {}", e))?,
             ),
             ApiKey::DescribeTopicPartitions => RequestBody::DescribeTopicPartitionsRequestV0(
-                DescribeTopicPartitionsRequestV0::from_be_bytes(&mut reader).map_err(|e| {
+                DescribeTopicPartitionsRequestV0::from_be_bytes(&mut buf).map_err(|e| {
                     anyhow::anyhow!("failed to parse DescribeTopicPartitionsRequestV0: {}", e)
                 })?,
             ),
@@ -165,20 +158,20 @@ pub struct ApiVersionsRequestV4 {
 }
 
 impl FromBytes for ApiVersionsRequestV4 {
-    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
-        let client_software_name = CompactString::from_be_bytes(reader).map_err(|e| {
+    fn from_be_bytes<B: bytes::Buf>(buf: &mut B) -> Result<Self> {
+        let client_software_name = CompactString::from_be_bytes(buf).map_err(|e| {
             anyhow::anyhow!(
                 "failed to parse CompactString for client_software_name: {}",
                 e
             )
         })?;
-        let client_software_version = CompactString::from_be_bytes(reader).map_err(|e| {
+        let client_software_version = CompactString::from_be_bytes(buf).map_err(|e| {
             anyhow::anyhow!(
                 "failed to parse CompactString for client_software_version: {}",
                 e
             )
         })?;
-        let tag = CompactArray::<NullableString>::from_be_bytes(reader).map_err(|e| {
+        let tag = CompactArray::<NullableString>::from_be_bytes(buf).map_err(|e| {
             anyhow::anyhow!(
                 "failed to parse CompactArray<NullableString> for tag: {}",
                 e
@@ -208,24 +201,20 @@ impl DescribeTopicPartitionsRequestV0 {
 }
 
 impl FromBytes for DescribeTopicPartitionsRequestV0 {
-    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
-        let topics = CompactArray::<Topic>::from_be_bytes(reader).map_err(|e| {
+    fn from_be_bytes<B: bytes::Buf>(buf: &mut B) -> Result<Self> {
+        let topics = CompactArray::<Topic>::from_be_bytes(buf).map_err(|e| {
             anyhow::anyhow!("failed to parse CompactArray<Topic> for topics: {}", e)
         })?;
 
-        let mut buf4 = [0u8; 4];
-        reader
-            .read_exact(&mut buf4)
-            .map_err(|e| anyhow::anyhow!("failed to read response_partition_limit: {}", e))?;
-        let response_partition_limit = i32::from_be_bytes(buf4);
+        let response_partition_limit = buf.try_get_i32().map_err(|e| {
+            anyhow::anyhow!("failed to parse i32 for response_partition_limit: {}", e)
+        })?;
 
-        let mut buf1 = [0u8; 1];
-        reader
-            .read_exact(&mut buf1)
-            .map_err(|e| anyhow::anyhow!("failed to read cursor: {}", e))?;
-        let cursor = buf1[0];
+        let cursor = buf
+            .try_get_u8()
+            .map_err(|e| anyhow::anyhow!("failed to parse u8 for cursor: {}", e))?;
 
-        let tag = CompactArray::<NullableString>::from_be_bytes(reader).map_err(|e| {
+        let tag = CompactArray::<NullableString>::from_be_bytes(buf).map_err(|e| {
             anyhow::anyhow!(
                 "failed to parse CompactArray<NullableString> for tag: {}",
                 e
@@ -254,10 +243,10 @@ impl Topic {
 }
 
 impl FromBytes for Topic {
-    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
-        let topic = CompactString::from_be_bytes(reader)
+    fn from_be_bytes<B: bytes::Buf>(buf: &mut B) -> Result<Self> {
+        let topic = CompactString::from_be_bytes(buf)
             .map_err(|e| anyhow::anyhow!("failed to parse CompactString for topic: {}", e))?;
-        let tag = CompactArray::<NullableString>::from_be_bytes(reader).map_err(|e| {
+        let tag = CompactArray::<NullableString>::from_be_bytes(buf).map_err(|e| {
             anyhow::anyhow!(
                 "failed to parse CompactArray<NullableString> for tag: {}",
                 e

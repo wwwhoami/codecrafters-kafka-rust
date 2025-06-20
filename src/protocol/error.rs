@@ -23,10 +23,8 @@ pub(crate) struct IoError {
 }
 
 impl IoError {
-    pub(crate) fn new(message: &str) -> Self {
-        Self {
-            message: message.to_string(),
-        }
+    pub(crate) fn new(message: String) -> Self {
+        Self { message }
     }
 }
 

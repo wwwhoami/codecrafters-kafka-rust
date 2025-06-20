@@ -3,5 +3,5 @@ pub trait ToBytes {
 }
 
 pub trait FromBytes: Sized {
-    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> crate::Result<Self>;
+    fn from_be_bytes<B: bytes::Buf>(buf: &mut B) -> crate::Result<Self>;
 }

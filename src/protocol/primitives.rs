@@ -1,3 +1,5 @@
+use bytes::Buf;
+
 use crate::Result;
 
 use super::{
@@ -21,11 +23,9 @@ impl ToBytes for ApiKey {
 }
 
 impl FromBytes for ApiKey {
-    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
-        let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf)?;
+    fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
+        let key = buf.try_get_i16()?;
 
-        let key = i16::from_be_bytes(buf);
         match key {
             18 => Ok(ApiKey::ApiVersions),
             75 => Ok(ApiKey::DescribeTopicPartitions),
@@ -54,20 +54,18 @@ impl ToBytes for NullableString {
 }
 
 impl FromBytes for NullableString {
-    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
-        let mut len_buf = [0u8; 2];
-        reader.read_exact(&mut len_buf)?;
+    fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
+        let len = buf.try_get_i16()?;
 
-        let len = i16::from_be_bytes(len_buf);
-        if len < 0 {
+        if len == -1 {
             Ok(NullableString { value: None })
         } else {
             let mut str_buf = vec![0u8; len as usize];
-            reader.read_exact(&mut str_buf)?;
+            buf.copy_to_slice(&mut str_buf);
+            let value = String::from_utf8(str_buf)
+                .map_err(|e| IoError::new(format!("failed to parse NullableString: {}", e)))?;
 
-            Ok(NullableString {
-                value: Some(String::from_utf8(str_buf)?),
-            })
+            Ok(NullableString { value: Some(value) })
         }
     }
 }
@@ -112,22 +110,16 @@ impl ToBytes for CompactString {
 }
 
 impl FromBytes for CompactString {
-    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
-        let mut len_buf = [0u8; 1];
-
-        if reader.read_exact(&mut len_buf).is_err() {
-            return Err(IoError::new("failed to read CompactString length").into());
-        }
-
-        // len_buf[0] is the length of the string, minus 1
-        let len = u8::from_be_bytes(len_buf) - 1;
+    fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
+        let len = buf.try_get_u8()? - 1; // Adjust length to match the protocol
 
         let mut str_buf = vec![0u8; len as usize];
-        reader.read_exact(&mut str_buf)?;
+        buf.copy_to_slice(&mut str_buf);
 
-        Ok(CompactString {
-            value: String::from_utf8(str_buf)?,
-        })
+        let value = String::from_utf8(str_buf)
+            .map_err(|e| IoError::new(format! {"failed to parse CompactString: {}", e}))?;
+
+        Ok(CompactString { value })
     }
 }
 
@@ -180,21 +172,19 @@ impl<T> FromBytes for CompactArray<T>
 where
     T: FromBytes,
 {
-    fn from_be_bytes<R: std::io::Read>(reader: &mut R) -> Result<Self> {
-        let mut len_buf = [0u8; 1];
-
-        reader.read_exact(&mut len_buf)?;
-
-        let len = u8::from_be_bytes(len_buf);
+    fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
+        let len = buf.try_get_u8()?;
 
         match len {
             0 => Ok(CompactArray { array: Vec::new() }),
             _ => {
                 let len = len - 1; // Adjust length to match the protocol
                 let mut array = Vec::with_capacity(len as usize);
+
                 for _ in 0..len {
-                    array.push(T::from_be_bytes(reader)?);
+                    array.push(T::from_be_bytes(buf)?);
                 }
+
                 Ok(CompactArray { array })
             }
         }

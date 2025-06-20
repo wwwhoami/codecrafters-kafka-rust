@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use bytes::BytesMut;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -94,17 +95,15 @@ impl Connection {
     }
 
     async fn read_request(&mut self) -> Result<RequestV0> {
-        let mut buf = [0; 1024];
-        let n = self.stream.read(&mut buf).await?;
+        let mut buf = BytesMut::with_capacity(1024);
+        let n = self.stream.read_buf(&mut buf).await?;
         if n == 0 {
             return Err(("connection closed").into());
         }
 
         println!("client {}: received {} bytes", self.peer_addr, n);
 
-        let rdr = &mut std::io::Cursor::new(&buf[..n]);
-
-        RequestV0::from_be_bytes(rdr)
+        RequestV0::from_be_bytes(&mut buf)
     }
 
     fn build_response(&self, request: &RequestV0) -> ResponseV0 {

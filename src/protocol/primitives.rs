@@ -99,13 +99,14 @@ impl CompactString {
 impl ToBytes for CompactString {
     fn to_be_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
-        if self.value.is_empty() {
-            buf.put_u8(0);
-            return buf.freeze();
+
+        // Adjust the length to match the protocol
+        let len = UnsignedVarInt::new((self.value.len() + 1) as u32);
+
+        buf.put_slice(len.to_be_bytes().as_ref());
+        if len.value > 0 {
+            buf.put_slice(self.value.as_bytes());
         }
-        let len = self.value.len() as u8;
-        buf.put_u8(len + 1); // +1 to match the protocol
-        buf.put_slice(self.value.as_bytes());
 
         buf.freeze()
     }
@@ -113,7 +114,8 @@ impl ToBytes for CompactString {
 
 impl FromBytes for CompactString {
     fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
-        let len = buf.try_get_u8()? - 1; // Adjust length to match the protocol
+        // Adjust the length to match the protocol
+        let len = UnsignedVarInt::from_be_bytes(buf)?.value - 1;
 
         let mut str_buf = vec![0u8; len as usize];
         buf.copy_to_slice(&mut str_buf);
@@ -159,8 +161,9 @@ where
             return buf.freeze();
         }
 
-        let len = self.array.len() as u8;
-        buf.put_u8(len + 1); // +1 to match the protocol
+        // Adjust length to match the protocol
+        let len = UnsignedVarInt::new((self.array.len() + 1) as u32);
+        buf.put_slice(len.to_be_bytes().as_ref());
 
         for item in &self.array {
             buf.extend_from_slice(&item.to_be_bytes());
@@ -175,7 +178,7 @@ where
     T: FromBytes,
 {
     fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
-        let len = buf.try_get_u8()?;
+        let len = UnsignedVarInt::from_be_bytes(buf)?.value;
 
         match len {
             0 => Ok(CompactArray { array: Vec::new() }),
@@ -192,3 +195,114 @@ where
         }
     }
 }
+
+// VarInt encoding/decoding follows the variable-length zig-zag encoding scheme
+// from Google Protocol Buffers.
+pub(crate) struct VarInt {
+    value: i32,
+}
+
+impl FromBytes for VarInt {
+    fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
+        let mut result: u32 = 0;
+        let mut shift = 0;
+
+        loop {
+            let byte = buf.try_get_u8().map_err(|e| {
+                error::IoError::new(format!("failed to read byte for VARINT: {}", e))
+            })?;
+
+            let val = (byte & 0x7F) as u32;
+            result |= val << shift;
+
+            if (byte & 0x80) == 0 {
+                // zig-zag decode
+                let decoded = ((result >> 1) as i32) ^ (-((result & 1) as i32));
+                return Ok(VarInt { value: decoded });
+            }
+
+            shift += 7;
+            if shift > 28 {
+                return Err(error::IoError::new("varint32 too long".to_string()).into());
+            }
+        }
+    }
+}
+
+impl ToBytes for VarInt {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+        // Zig-zag encode the value
+        let mut value = ((self.value << 1) ^ (self.value >> 31)) as u32;
+
+        loop {
+            if (value & !0x7F) == 0 {
+                buf.put_u8(value as u8);
+                break;
+            } else {
+                buf.put_u8(((value & 0x7F) | 0x80) as u8);
+                value >>= 7;
+            }
+        }
+
+        buf.freeze()
+    }
+}
+
+// UnsignedVarInt encoding/decoding follows the variable-length encoding scheme
+// for unsigned integers, where each byte contains 7 bits of the value
+// and the highest bit indicates if there are more bytes to read.
+pub(crate) struct UnsignedVarInt {
+    value: u32,
+}
+
+impl UnsignedVarInt {
+    pub(crate) fn new(value: u32) -> Self {
+        Self { value }
+    }
+}
+
+impl FromBytes for UnsignedVarInt {
+    fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
+        let mut result: u32 = 0;
+        let mut shift = 0;
+
+        loop {
+            let byte = buf.try_get_u8().map_err(|e| {
+                error::IoError::new(format!("failed to read byte for UNSIGNED VARINT: {}", e))
+            })?;
+
+            let val = (byte & 0x7F) as u32;
+            result |= val << shift;
+
+            if (byte & 0x80) == 0 {
+                return Ok(UnsignedVarInt { value: result });
+            }
+
+            shift += 7;
+            if shift > 28 {
+                return Err(error::IoError::new("unsigned varint32 too long".to_string()).into());
+            }
+        }
+    }
+}
+
+impl ToBytes for UnsignedVarInt {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+        let mut value = self.value;
+
+        loop {
+            if (value & !0x7F) == 0 {
+                buf.put_u8(value as u8);
+                break;
+            } else {
+                buf.put_u8(((value & 0x7F) | 0x80) as u8);
+                value >>= 7;
+            }
+        }
+
+        buf.freeze()
+    }
+}
+

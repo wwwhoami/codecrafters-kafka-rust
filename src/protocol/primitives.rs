@@ -1,4 +1,4 @@
-use bytes::Buf;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::Result;
 
@@ -14,11 +14,15 @@ pub(crate) enum ApiKey {
 }
 
 impl ToBytes for ApiKey {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        match self {
-            ApiKey::ApiVersions => (18_i16).to_be_bytes().to_vec(),
-            ApiKey::DescribeTopicPartitions => (75_i16).to_be_bytes().to_vec(),
-        }
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::with_capacity(2);
+        let val = match self {
+            ApiKey::ApiVersions => 18_i16,
+            ApiKey::DescribeTopicPartitions => 75_i16,
+        };
+
+        buf.put_i16(val);
+        buf.freeze()
     }
 }
 
@@ -40,16 +44,17 @@ pub struct NullableString {
 }
 
 impl ToBytes for NullableString {
-    fn to_be_bytes(&self) -> Vec<u8> {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
         if self.value.is_none() {
-            (-1_i16).to_be_bytes().to_vec() // -1 for empty string
+            buf.put_i16(-1);
         } else {
             let value = self.value.as_ref().unwrap();
-            let mut bytes = (value.len() as i16).to_be_bytes().to_vec();
-            bytes.extend_from_slice(value.as_bytes());
-
-            bytes
+            buf.put_i16(value.len() as i16);
+            buf.put_slice(value.as_bytes());
         }
+
+        buf.freeze()
     }
 }
 
@@ -92,20 +97,17 @@ impl CompactString {
 }
 
 impl ToBytes for CompactString {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
         if self.value.is_empty() {
-            // If the string is empty, we just write a single byte 0
-            bytes.push(0);
-            return bytes;
+            buf.put_u8(0);
+            return buf.freeze();
         }
-
         let len = self.value.len() as u8;
-        bytes.push(len + 1); // +1 to match the protocol
-        bytes.extend_from_slice(self.value.as_bytes());
+        buf.put_u8(len + 1); // +1 to match the protocol
+        buf.put_slice(self.value.as_bytes());
 
-        bytes
+        buf.freeze()
     }
 }
 
@@ -149,22 +151,22 @@ impl<T> ToBytes for CompactArray<T>
 where
     T: ToBytes + std::fmt::Debug,
 {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
 
         if self.array.is_empty() {
-            // If the array is empty, we just write a single byte 0
-            bytes.push(0);
-            return bytes;
+            buf.put_u8(0);
+            return buf.freeze();
         }
 
         let len = self.array.len() as u8;
-        bytes.push(len + 1); // +1 to match the protocol
+        buf.put_u8(len + 1); // +1 to match the protocol
+
         for item in &self.array {
-            bytes.extend_from_slice(&item.to_be_bytes());
+            buf.extend_from_slice(&item.to_be_bytes());
         }
 
-        bytes
+        buf.freeze()
     }
 }
 

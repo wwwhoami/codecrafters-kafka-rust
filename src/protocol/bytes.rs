@@ -1,5 +1,5 @@
 pub trait ToBytes {
-    fn to_be_bytes(&self) -> Vec<u8>;
+    fn to_be_bytes(&self) -> bytes::Bytes;
 }
 
 pub trait FromBytes: Sized {

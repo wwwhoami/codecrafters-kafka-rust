@@ -1,3 +1,4 @@
+use bytes::{BufMut, Bytes, BytesMut};
 use uuid::Uuid;
 
 use super::{
@@ -31,14 +32,14 @@ impl ResponseV0 {
 }
 
 impl ToBytes for ResponseV0 {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
 
-        bytes.extend_from_slice(&self.message_size.to_be_bytes());
-        bytes.extend_from_slice(&self.header.to_be_bytes());
-        bytes.extend_from_slice(&self.body.to_be_bytes());
+        buf.put_i32(self.message_size);
+        buf.extend_from_slice(&self.header.to_be_bytes());
+        buf.extend_from_slice(&self.body.to_be_bytes());
 
-        bytes
+        buf.freeze()
     }
 }
 
@@ -49,7 +50,7 @@ pub enum ResponseHeader {
 }
 
 impl ToBytes for ResponseHeader {
-    fn to_be_bytes(&self) -> Vec<u8> {
+    fn to_be_bytes(&self) -> Bytes {
         match self {
             ResponseHeader::V0(header) => header.to_be_bytes(),
             ResponseHeader::V1(header) => header.to_be_bytes(),
@@ -69,12 +70,12 @@ impl ResponseHeaderV0 {
 }
 
 impl ToBytes for ResponseHeaderV0 {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
 
-        bytes.extend_from_slice(&self.correlation_id.to_be_bytes());
+        buf.put_i32(self.correlation_id);
 
-        bytes
+        buf.freeze()
     }
 }
 
@@ -94,13 +95,13 @@ impl ResponseHeaderV1 {
 }
 
 impl ToBytes for ResponseHeaderV1 {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
 
-        bytes.extend_from_slice(&self.correlation_id.to_be_bytes());
-        bytes.extend_from_slice(&self.tag.to_be_bytes());
+        buf.put_i32(self.correlation_id);
+        buf.extend_from_slice(&self.tag.to_be_bytes());
 
-        bytes
+        buf.freeze()
     }
 }
 
@@ -111,7 +112,7 @@ pub enum ResponseBody {
 }
 
 impl ToBytes for ResponseBody {
-    fn to_be_bytes(&self) -> Vec<u8> {
+    fn to_be_bytes(&self) -> Bytes {
         match self {
             ResponseBody::ApiVersionsResponseV4(body) => body.to_be_bytes(),
             ResponseBody::DescribeTopicPartiotionsResponseV0(body) => body.to_be_bytes(),
@@ -144,15 +145,15 @@ impl ApiVersionsResponseBodyV4 {
 }
 
 impl ToBytes for ApiVersionsResponseBodyV4 {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
 
-        bytes.extend_from_slice(&(self.error_code.clone() as i16).to_be_bytes());
-        bytes.extend_from_slice(&self.api_versions.to_be_bytes());
-        bytes.extend_from_slice(&self.throttle_time_ms.to_be_bytes());
-        bytes.extend_from_slice(&self.tag.to_be_bytes());
+        buf.put_i16(self.error_code.clone() as i16);
+        buf.extend_from_slice(&self.api_versions.to_be_bytes());
+        buf.put_i32(self.throttle_time_ms);
+        buf.extend_from_slice(&self.tag.to_be_bytes());
 
-        bytes
+        buf.freeze()
     }
 }
 
@@ -181,15 +182,15 @@ impl ApiVersion {
 }
 
 impl ToBytes for ApiVersion {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
 
-        bytes.extend_from_slice(&self.api_key.to_be_bytes());
-        bytes.extend_from_slice(&self.min_version.to_be_bytes());
-        bytes.extend_from_slice(&self.max_version.to_be_bytes());
-        bytes.extend_from_slice(&self.tag.to_be_bytes());
+        buf.extend_from_slice(&self.api_key.to_be_bytes());
+        buf.put_i16(self.min_version);
+        buf.put_i16(self.max_version);
+        buf.extend_from_slice(&self.tag.to_be_bytes());
 
-        bytes
+        buf.freeze()
     }
 }
 
@@ -218,15 +219,15 @@ impl DescribeTopicPartiotionsResponseBodyV0 {
 }
 
 impl ToBytes for DescribeTopicPartiotionsResponseBodyV0 {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
 
-        bytes.extend_from_slice(&self.throttle_time_ms.to_be_bytes());
-        bytes.extend_from_slice(&self.topics.to_be_bytes());
-        bytes.push(self.next_cursor);
-        bytes.extend_from_slice(&self.tag.to_be_bytes());
+        buf.put_i32(self.throttle_time_ms);
+        buf.extend_from_slice(&self.topics.to_be_bytes());
+        buf.put_u8(self.next_cursor);
+        buf.extend_from_slice(&self.tag.to_be_bytes());
 
-        bytes
+        buf.freeze()
     }
 }
 
@@ -264,17 +265,17 @@ impl Topic {
 }
 
 impl ToBytes for Topic {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
 
-        bytes.extend_from_slice(&(self.error_code.clone() as i16).to_be_bytes());
-        bytes.extend_from_slice(&self.name.to_be_bytes());
-        bytes.extend_from_slice(self.id.as_bytes());
-        bytes.push(self.is_internal as u8);
-        bytes.extend_from_slice(&self.partitions.to_be_bytes());
-        bytes.extend_from_slice(&self.authorized_operations);
-        bytes.extend_from_slice(&self.tag.to_be_bytes());
+        buf.put_i16(self.error_code.clone() as i16);
+        buf.extend_from_slice(&self.name.to_be_bytes());
+        buf.extend_from_slice(self.id.as_bytes());
+        buf.put_u8(self.is_internal as u8);
+        buf.extend_from_slice(&self.partitions.to_be_bytes());
+        buf.extend_from_slice(&self.authorized_operations);
+        buf.extend_from_slice(&self.tag.to_be_bytes());
 
-        bytes
+        buf.freeze()
     }
 }

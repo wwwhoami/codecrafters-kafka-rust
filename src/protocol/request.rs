@@ -1,4 +1,4 @@
-use bytes::Buf;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::Result;
 
@@ -31,16 +31,18 @@ impl RequestHeaderV2 {
 }
 
 impl ToBytes for RequestHeaderV2 {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&self.request_api_key.to_be_bytes());
-        bytes.extend_from_slice(&self.request_api_version.to_be_bytes());
-        bytes.extend_from_slice(&self.correlation_id.to_be_bytes());
+    fn to_be_bytes(&self) -> Bytes {
+        use bytes::BufMut;
 
-        bytes.extend_from_slice(&self.client_id.to_be_bytes());
-        bytes.extend_from_slice(&self.tag.to_be_bytes());
+        let mut buf = BytesMut::new();
 
-        bytes
+        buf.extend_from_slice(&self.request_api_key.to_be_bytes());
+        buf.put_i16(self.request_api_version);
+        buf.put_i32(self.correlation_id);
+        buf.extend_from_slice(&self.client_id.to_be_bytes());
+        buf.extend_from_slice(&self.tag.to_be_bytes());
+
+        buf.freeze()
     }
 }
 impl FromBytes for RequestHeaderV2 {
@@ -111,13 +113,13 @@ impl RequestV0 {
 }
 
 impl ToBytes for RequestV0 {
-    fn to_be_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
 
-        bytes.extend_from_slice(&self.message_size.to_be_bytes());
-        bytes.extend_from_slice(&self.header.to_be_bytes());
+        buf.put_i32(self.message_size);
+        buf.extend_from_slice(&self.header.to_be_bytes());
 
-        bytes
+        buf.freeze()
     }
 }
 

@@ -3,7 +3,8 @@ use uuid::Uuid;
 
 use super::{
     bytes::ToBytes,
-    primitives::{ApiKey, CompactArray, CompactString, NullableString},
+    cluster_metadata::PartitionRecordValue,
+    primitives::{ApiKey, CompactArray, CompactString, NullableString, VarInt, INT32},
 };
 
 #[derive(Debug, Clone)]
@@ -237,8 +238,8 @@ pub struct Topic {
     name: CompactString,
     id: Uuid,
     is_internal: bool,
-    partitions: CompactArray<NullableString>,
-    authorized_operations: [u8; 4],
+    partitions: CompactArray<Partition>,
+    authorized_operations: u32,
     tag: CompactArray<NullableString>,
 }
 
@@ -248,8 +249,8 @@ impl Topic {
         name: CompactString,
         id: Uuid,
         is_internal: bool,
-        partitions: CompactArray<NullableString>,
-        authorized_operations: [u8; 4],
+        partitions: CompactArray<Partition>,
+        authorized_operations: u32,
         tag: CompactArray<NullableString>,
     ) -> Self {
         Self {
@@ -273,9 +274,89 @@ impl ToBytes for Topic {
         buf.extend_from_slice(self.id.as_bytes());
         buf.put_u8(self.is_internal as u8);
         buf.extend_from_slice(&self.partitions.to_be_bytes());
-        buf.extend_from_slice(&self.authorized_operations);
+        buf.put_u32(self.authorized_operations);
         buf.extend_from_slice(&self.tag.to_be_bytes());
 
         buf.freeze()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Partition {
+    error_code: ErrorCode,
+    partition_index: i32,
+    leader: i32,
+    leader_epoch: i32,
+    // replica_nodes_len: VarInt, // varint
+    replica_nodes: CompactArray<INT32>, // replica nodes
+    // isr_nodes_len: VarInt, // varint
+    isr_nodes: CompactArray<INT32>,   // in-sync replica nodes
+    eligible_leader_replicas: VarInt, //varint 0 for now
+    last_known_elr: u8,
+    offline_replicas: u8,
+    tag_buffer: u8,
+}
+
+impl Partition {
+    pub(crate) fn new(
+        error_code: ErrorCode,
+        partition_index: i32,
+        leader: i32,
+        leader_epoch: i32,
+        replica_nodes: CompactArray<INT32>,
+        isr_nodes: CompactArray<INT32>,
+        eligible_leader_replicas: VarInt,
+        last_known_elr: u8,
+        offline_replicas: u8,
+        tag_buffer: u8,
+    ) -> Self {
+        Self {
+            error_code,
+            partition_index,
+            leader,
+            leader_epoch,
+            replica_nodes,
+            isr_nodes,
+            eligible_leader_replicas,
+            last_known_elr,
+            offline_replicas,
+            tag_buffer,
+        }
+    }
+}
+
+impl ToBytes for Partition {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+
+        buf.put_i16(self.error_code.clone() as i16);
+        buf.put_i32(self.partition_index);
+        buf.put_i32(self.leader);
+        buf.put_i32(self.leader_epoch);
+        buf.extend_from_slice(&self.replica_nodes.to_be_bytes());
+        buf.extend_from_slice(&self.isr_nodes.to_be_bytes());
+        buf.extend_from_slice(&self.eligible_leader_replicas.to_be_bytes());
+        buf.put_u8(self.last_known_elr);
+        buf.put_u8(self.offline_replicas);
+        buf.put_u8(self.tag_buffer);
+
+        buf.freeze()
+    }
+}
+
+impl From<&PartitionRecordValue> for Partition {
+    fn from(partition_record: &PartitionRecordValue) -> Self {
+        Partition {
+            error_code: ErrorCode::None,
+            partition_index: partition_record.partition_id(),
+            leader: partition_record.leader(),
+            leader_epoch: partition_record.leader_epoch(),
+            replica_nodes: partition_record.replica_array().clone(),
+            isr_nodes: partition_record.in_sync_replica_array().clone(),
+            eligible_leader_replicas: VarInt::from(0),
+            last_known_elr: 0,
+            offline_replicas: 0,
+            tag_buffer: 0,
+        }
     }
 }

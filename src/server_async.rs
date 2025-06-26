@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{fs::File, net::SocketAddr};
 
 use bytes::BytesMut;
 use tokio::{
@@ -9,11 +9,13 @@ use uuid::Uuid;
 
 use crate::protocol::{
     bytes::{FromBytes, ToBytes},
-    primitives::{ApiKey, CompactArray, CompactString},
+    cluster_metadata::{self, ClusterMetadata},
+    primitives::{ApiKey, CompactArray, CompactString, VarInt},
     request::RequestV0,
     response::{
         ApiVersion, ApiVersionsResponseBodyV4, DescribeTopicPartiotionsResponseBodyV0, ErrorCode,
-        ResponseBody, ResponseHeader, ResponseHeaderV0, ResponseHeaderV1, ResponseV0, Topic,
+        Partition, ResponseBody, ResponseHeader, ResponseHeaderV0, ResponseHeaderV1, ResponseV0,
+        Topic,
     },
 };
 
@@ -107,73 +109,146 @@ impl Connection {
     }
 
     fn build_response(&self, request: &RequestV0) -> ResponseV0 {
-        let response_body = match request.header().request_api_key() {
-            ApiKey::ApiVersions => match request.header().request_api_version() {
-                0..=4 => ResponseBody::ApiVersionsResponseV4(ApiVersionsResponseBodyV4::new(
-                    ErrorCode::None,
-                    CompactArray::new(vec![
-                        ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::new(vec![])),
-                        ApiVersion::new(
-                            ApiKey::DescribeTopicPartitions,
-                            0,
-                            0,
-                            CompactArray::new(vec![]),
-                        ),
-                    ]),
-                    0,
-                    CompactArray::new(vec![]),
-                )),
-                _ => ResponseBody::ApiVersionsResponseV4(ApiVersionsResponseBodyV4::new(
-                    ErrorCode::UnsupportedVersion,
-                    CompactArray::new(vec![]),
-                    0,
-                    CompactArray::new(vec![]),
-                )),
-            },
-            ApiKey::DescribeTopicPartitions => {
-                let topic_name = request
-                    .body()
-                    .as_describe_topic_partitions_request_v0()
-                    .unwrap()
-                    .topics()
-                    .to_vec()
-                    .first()
-                    .unwrap()
-                    .topic()
-                    .to_string();
+        let response_header = Self::build_response_header(request);
+        let response_body = Self::build_response_body(request);
 
-                ResponseBody::DescribeTopicPartiotionsResponseV0(
-                    DescribeTopicPartiotionsResponseBodyV0::new(
-                        0,
-                        CompactArray::new(vec![Topic::new(
-                            ErrorCode::UnknownTopicOrPartition,
-                            CompactString::from_str(topic_name.as_str()),
-                            Uuid::nil(),
-                            false,
-                            CompactArray::new(vec![]),
-                            [0, 0, 0, 0],
-                            CompactArray::new(vec![]),
-                        )]),
-                        u8::MAX,
-                        CompactArray::new(vec![]),
-                    ),
-                )
-            }
-        };
+        ResponseV0::new(
+            response_body.to_be_bytes().len() as i32 + response_header.to_be_bytes().len() as i32,
+            response_header,
+            response_body,
+        )
+    }
 
-        let response_header = match request.header().request_api_key() {
+    fn build_response_header(request: &RequestV0) -> ResponseHeader {
+        match request.header().request_api_key() {
             ApiKey::ApiVersions => {
                 ResponseHeader::V0(ResponseHeaderV0::new(request.header().correlation_id()))
             }
             ApiKey::DescribeTopicPartitions => {
                 ResponseHeader::V1(ResponseHeaderV1::new(request.header().correlation_id()))
             }
-        };
+        }
+    }
 
-        ResponseV0::new(
-            response_body.to_be_bytes().len() as i32 + response_header.to_be_bytes().len() as i32,
-            response_header,
-            response_body,
+    fn build_response_body(request: &RequestV0) -> ResponseBody {
+        match request.header().request_api_key() {
+            ApiKey::ApiVersions => Self::build_api_versions_response(request),
+            ApiKey::DescribeTopicPartitions => {
+                Self::build_describe_topic_partitions_response(request)
+            }
+        }
+    }
+
+    fn build_api_versions_response(request: &RequestV0) -> ResponseBody {
+        let version = request.header().request_api_version();
+        if (0..=4).contains(&version) {
+            ResponseBody::ApiVersionsResponseV4(ApiVersionsResponseBodyV4::new(
+                ErrorCode::None,
+                CompactArray::new(vec![
+                    ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::default()),
+                    ApiVersion::new(
+                        ApiKey::DescribeTopicPartitions,
+                        0,
+                        0,
+                        CompactArray::default(),
+                    ),
+                ]),
+                0,
+                CompactArray::default(),
+            ))
+        } else {
+            ResponseBody::ApiVersionsResponseV4(ApiVersionsResponseBodyV4::new(
+                ErrorCode::UnsupportedVersion,
+                CompactArray::default(),
+                0,
+                CompactArray::default(),
+            ))
+        }
+    }
+
+    fn build_describe_topic_partitions_response(request: &RequestV0) -> ResponseBody {
+        let topic_name = request
+            .body()
+            .as_describe_topic_partitions_request_v0()
+            .and_then(|b| b.topics().to_vec().first().map(|t| t.topic().to_string()))
+            .unwrap_or_else(|| {
+                eprintln!("no topic name provided in DescribeTopicPartitionsRequestV0");
+                "unknown".to_string()
+            });
+
+        let metadata =
+            File::open("/tmp/kraft-combined-logs/__cluster_metadata-0/00000000000000000000.log")
+                .map_err(|e| anyhow::anyhow!("failed to read cluster metadata {}", e))
+                .and_then(|file| {
+                    ClusterMetadata::try_from(file)
+                        .map_err(|e| anyhow::anyhow!("failed to parse cluster metadata: {}", e))
+                });
+
+        match metadata {
+            Ok(metadata) => {
+                let records = metadata.find_topic_records_by_topic(&topic_name);
+
+                if let Some(record) = records.first() {
+                    let topic_uuid = record
+                        .record_value()
+                        .value()
+                        .as_topic_record()
+                        .unwrap()
+                        .topic_uuid();
+                    ResponseBody::DescribeTopicPartiotionsResponseV0(
+                        DescribeTopicPartiotionsResponseBodyV0::new(
+                            0,
+                            CompactArray::new(vec![Topic::new(
+                                ErrorCode::None,
+                                CompactString::from_str(&topic_name),
+                                topic_uuid,
+                                false,
+                                CompactArray::new(vec![Partition::new(
+                                    ErrorCode::None,
+                                    0,
+                                    0,
+                                    0,
+                                    CompactArray::default(),
+                                    CompactArray::default(),
+                                    VarInt::from(0),
+                                    0,
+                                    0,
+                                    0,
+                                )]),
+                                0,
+                                CompactArray::default(),
+                            )]),
+                            u8::MAX,
+                            CompactArray::default(),
+                        ),
+                    )
+                } else {
+                    Self::build_unknown_topic_response(&topic_name)
+                }
+            }
+            Err(e) => {
+                println!("error reading cluster metadata: {}", e);
+                Self::build_unknown_topic_response(&topic_name)
+            }
+        }
+    }
+
+    fn build_unknown_topic_response(topic_name: &str) -> ResponseBody {
+        ResponseBody::DescribeTopicPartiotionsResponseV0(
+            DescribeTopicPartiotionsResponseBodyV0::new(
+                0,
+                CompactArray::new(vec![Topic::new(
+                    ErrorCode::UnknownTopicOrPartition,
+                    CompactString::from_str(topic_name),
+                    Uuid::nil(),
+                    false,
+                    CompactArray::default(),
+                    0,
+                    CompactArray::default(),
+                )]),
+                u8::MAX,
+                CompactArray::default(),
+            ),
         )
     }
 }

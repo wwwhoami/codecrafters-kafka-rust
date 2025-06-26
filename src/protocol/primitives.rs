@@ -1,3 +1,5 @@
+use std::io::{BufReader, Read};
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::Result;
@@ -96,6 +98,12 @@ impl CompactString {
     }
 }
 
+impl std::fmt::Display for CompactString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.value)
+    }
+}
+
 impl ToBytes for CompactString {
     fn to_be_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
@@ -116,6 +124,12 @@ impl FromBytes for CompactString {
     fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
         // Adjust the length to match the protocol
         let len = UnsignedVarInt::from_be_bytes(buf)?.value - 1;
+
+        if len == 0 {
+            return Ok(CompactString {
+                value: String::new(),
+            });
+        }
 
         let mut str_buf = vec![0u8; len as usize];
         buf.copy_to_slice(&mut str_buf);
@@ -151,7 +165,7 @@ impl<T> CompactArray<T> {
 
 impl<T> ToBytes for CompactArray<T>
 where
-    T: ToBytes + std::fmt::Debug,
+    T: ToBytes,
 {
     fn to_be_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
@@ -198,8 +212,21 @@ where
 
 // VarInt encoding/decoding follows the variable-length zig-zag encoding scheme
 // from Google Protocol Buffers.
+#[derive(Debug)]
 pub(crate) struct VarInt {
     value: i32,
+}
+
+impl VarInt {
+    pub(crate) fn value(&self) -> i32 {
+        self.value
+    }
+}
+
+impl From<i32> for VarInt {
+    fn from(value: i32) -> Self {
+        VarInt { value }
+    }
 }
 
 impl FromBytes for VarInt {
@@ -252,6 +279,7 @@ impl ToBytes for VarInt {
 // UnsignedVarInt encoding/decoding follows the variable-length encoding scheme
 // for unsigned integers, where each byte contains 7 bits of the value
 // and the highest bit indicates if there are more bytes to read.
+#[derive(Debug)]
 pub(crate) struct UnsignedVarInt {
     value: u32,
 }
@@ -259,6 +287,16 @@ pub(crate) struct UnsignedVarInt {
 impl UnsignedVarInt {
     pub(crate) fn new(value: u32) -> Self {
         Self { value }
+    }
+
+    pub(crate) fn value(&self) -> u32 {
+        self.value
+    }
+}
+
+impl From<u32> for UnsignedVarInt {
+    fn from(value: u32) -> Self {
+        UnsignedVarInt { value }
     }
 }
 
@@ -306,3 +344,138 @@ impl ToBytes for UnsignedVarInt {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct INT16 {
+    value: i16,
+}
+
+impl From<i16> for INT16 {
+    fn from(value: i16) -> Self {
+        INT16 { value }
+    }
+}
+
+impl FromBytes for INT16 {
+    fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
+        let value = buf.try_get_i16()?;
+        Ok(INT16 { value })
+    }
+}
+
+impl ToBytes for INT16 {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::with_capacity(2);
+        buf.put_i16(self.value);
+        buf.freeze()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct INT32 {
+    value: i32,
+}
+
+impl INT32 {
+    pub(crate) fn value(&self) -> i32 {
+        self.value
+    }
+}
+
+impl From<i32> for INT32 {
+    fn from(value: i32) -> Self {
+        INT32 { value }
+    }
+}
+
+impl std::fmt::Display for INT32 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "INT32({})", self.value)
+    }
+}
+
+impl<R: Read> TryFrom<&mut BufReader<R>> for INT32 {
+    type Error = std::io::Error;
+
+    fn try_from(reader: &mut BufReader<R>) -> std::result::Result<Self, Self::Error> {
+        let mut buf = [0u8; 4];
+
+        reader.read_exact(&mut buf)?;
+        let value = i32::from_be_bytes(buf);
+
+        Ok(INT32 { value })
+    }
+}
+
+impl TryFrom<bytes::Bytes> for INT32 {
+    type Error = std::io::Error;
+
+    fn try_from(mut bytes: Bytes) -> std::result::Result<Self, Self::Error> {
+        let value = bytes.try_get_i32()?;
+        Ok(INT32 { value })
+    }
+}
+
+impl FromBytes for INT32 {
+    fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
+        let value = buf.try_get_i32()?;
+        Ok(INT32 { value })
+    }
+}
+
+impl ToBytes for INT32 {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::with_capacity(4);
+        buf.put_i32(self.value);
+        buf.freeze()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct INT64 {
+    value: i64,
+}
+
+impl INT64 {
+    pub(crate) fn value(&self) -> i64 {
+        self.value
+    }
+}
+
+impl From<i64> for INT64 {
+    fn from(value: i64) -> Self {
+        INT64 { value }
+    }
+}
+
+impl std::fmt::Display for INT64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "INT64({})", self.value)
+    }
+}
+
+impl<R: Read> TryFrom<&mut BufReader<R>> for INT64 {
+    type Error = std::io::Error;
+
+    fn try_from(reader: &mut BufReader<R>) -> std::result::Result<Self, Self::Error> {
+        let mut buf = [0u8; 8];
+        reader.read_exact(&mut buf)?;
+        let value = i64::from_be_bytes(buf);
+        Ok(INT64 { value })
+    }
+}
+
+impl FromBytes for INT64 {
+    fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
+        let value = buf.try_get_i64()?;
+        Ok(INT64 { value })
+    }
+}
+
+impl ToBytes for INT64 {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::with_capacity(4);
+        buf.put_i64(self.value);
+
+        buf.freeze()
+    }
+}

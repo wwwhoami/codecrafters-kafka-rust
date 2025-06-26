@@ -40,6 +40,16 @@ impl ClusterMetadata {
             .flat_map(|batch| batch.find_topic_records_by_topic(topic))
             .collect()
     }
+
+    pub fn find_partition_records_by_topic_uuid(
+        &self,
+        topic_uuid: uuid::Uuid,
+    ) -> Vec<&PartitionRecordValue> {
+        self.batches
+            .values()
+            .flat_map(|batch| batch.find_partition_records_by_topic_uuid(topic_uuid))
+            .collect()
+    }
 }
 
 impl TryFrom<File> for ClusterMetadata {
@@ -61,12 +71,11 @@ impl TryFrom<File> for ClusterMetadata {
         while let Ok(base_offset) = bytes.try_get_i64() {
             let batch_length = bytes.try_get_i32()?;
 
-            let contents = bytes.slice(..batch_length as usize);
-            bytes.advance(batch_length as usize);
+            let mut contents = bytes.split_to(batch_length as usize);
 
             batches.insert(
                 base_offset,
-                Batch::try_from(contents).map_err(|e| {
+                Batch::try_from(&mut contents).map_err(|e| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("failed to parse batch from contents: {}", e),
@@ -107,12 +116,32 @@ impl Batch {
             })
             .collect()
     }
+
+    fn find_partition_records_by_topic_uuid(
+        &self,
+        topic_uuid: uuid::Uuid,
+    ) -> Vec<&PartitionRecordValue> {
+        self.records
+            .iter()
+            .filter_map(|record| {
+                if let RecordValueByType::Partition(partition_value) = &record.record_value.value {
+                    if partition_value.topic_uuid == topic_uuid {
+                        Some(partition_value)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
-impl TryFrom<bytes::Bytes> for Batch {
+impl TryFrom<&mut bytes::Bytes> for Batch {
     type Error = std::io::Error;
 
-    fn try_from(mut bytes: bytes::Bytes) -> std::result::Result<Self, Self::Error> {
+    fn try_from(mut bytes: &mut bytes::Bytes) -> std::result::Result<Self, Self::Error> {
         let partition_leader_epoch = bytes.try_get_i32()?;
         let magic_byte = bytes.try_get_u8()?;
         let crc = bytes.try_get_i32()?;
@@ -125,11 +154,10 @@ impl TryFrom<bytes::Bytes> for Batch {
         let base_sequence = bytes.try_get_i32()?;
 
         let records_length = bytes.try_get_i32()?;
-
         let mut records = Vec::with_capacity(records_length as usize);
 
         for _ in 0..records_length {
-            let record = Record::try_from(bytes.clone()).map_err(|e| {
+            let record = Record::try_from(&mut *bytes).map_err(|e| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("failed to parse record from batch: {}", e),
@@ -163,6 +191,7 @@ pub(crate) struct Record {
     offset_delta: VarInt,
     key: Vec<u8>,
     record_value: RecordValue,
+    headers_array_count: u32,
 }
 
 impl Record {
@@ -171,39 +200,36 @@ impl Record {
     }
 }
 
-impl TryFrom<bytes::Bytes> for Record {
+impl TryFrom<&mut bytes::Bytes> for Record {
     type Error = crate::Error;
 
-    fn try_from(mut bytes: bytes::Bytes) -> std::result::Result<Self, Self::Error> {
+    fn try_from(mut bytes: &mut bytes::Bytes) -> std::result::Result<Self, Self::Error> {
         let record_length = VarInt::from_be_bytes(&mut bytes)?;
         let attributes = bytes.try_get_u8()?;
         let timestamp_delta = VarInt::from_be_bytes(&mut bytes)?;
         let offset_delta = VarInt::from_be_bytes(&mut bytes)?;
-
         let key_length = VarInt::from_be_bytes(&mut bytes)?.value();
         let key = if key_length < 0 {
             Vec::new()
         } else {
-            let mut buf = vec![0u8; key_length as usize];
-            bytes.copy_to_slice(&mut buf);
-            buf
+            bytes.split_to(key_length as usize).to_vec()
         };
 
         let value_length = VarInt::from_be_bytes(&mut bytes)?.value();
-        let contents = if value_length < 0 {
+        let mut record_contents = if value_length < 0 {
             Bytes::new()
         } else {
-            let mut contents_buf = vec![0u8; value_length as usize];
-            bytes.copy_to_slice(&mut contents_buf);
-            Bytes::from(contents_buf)
+            bytes.split_to(value_length as usize)
         };
 
-        let record_value = RecordValue::try_from(contents).map_err(|e| {
+        let record_value = RecordValue::try_from(&mut record_contents).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("failed to parse record value: {}", e),
             )
         })?;
+
+        let headers_array_count = UnsignedVarInt::from_be_bytes(&mut bytes)?.value();
 
         Ok(Record {
             record_length,
@@ -212,15 +238,16 @@ impl TryFrom<bytes::Bytes> for Record {
             offset_delta,
             key,
             record_value,
+            headers_array_count,
         })
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct RecordValue {
-    frame_version: u8,
-    record_type: u8,
-    version: u8,
+    frame_version: i8,
+    record_type: i8,
+    version: i8,
     value: RecordValueByType,
 }
 
@@ -230,13 +257,13 @@ impl RecordValue {
     }
 }
 
-impl TryFrom<bytes::Bytes> for RecordValue {
+impl TryFrom<&mut bytes::Bytes> for RecordValue {
     type Error = crate::Error;
 
-    fn try_from(mut bytes: bytes::Bytes) -> std::result::Result<Self, Self::Error> {
-        let frame_version = bytes.try_get_u8()?;
-        let record_type = bytes.try_get_u8()?;
-        let version = bytes.try_get_u8()?;
+    fn try_from(bytes: &mut bytes::Bytes) -> std::result::Result<Self, Self::Error> {
+        let frame_version = bytes.try_get_i8()?;
+        let record_type = bytes.try_get_i8()?;
+        let version = bytes.try_get_i8()?;
 
         let value = RecordValueByType::try_from(bytes, record_type).map_err(|e| {
             std::io::Error::new(
@@ -262,7 +289,7 @@ pub(crate) enum RecordValueByType {
 }
 
 impl RecordValueByType {
-    fn try_from(bytes: bytes::Bytes, record_type: u8) -> Result<Self> {
+    fn try_from(bytes: &mut bytes::Bytes, record_type: i8) -> Result<Self> {
         match record_type {
             12 => Ok(Self::Feature(FeatureRecordValue::try_from(bytes)?)),
             2 => Ok(Self::Topic(TopicRecordValue::try_from(bytes)?)),
@@ -306,10 +333,10 @@ pub struct FeatureRecordValue {
     tagged_fields_count: u32,
 }
 
-impl TryFrom<bytes::Bytes> for FeatureRecordValue {
+impl TryFrom<&mut bytes::Bytes> for FeatureRecordValue {
     type Error = crate::Error;
 
-    fn try_from(mut bytes: bytes::Bytes) -> std::result::Result<Self, Self::Error> {
+    fn try_from(mut bytes: &mut bytes::Bytes) -> std::result::Result<Self, Self::Error> {
         let name = CompactString::from_be_bytes(&mut bytes)
             .map_err(|e| {
                 std::io::Error::new(
@@ -343,10 +370,10 @@ impl TopicRecordValue {
     }
 }
 
-impl TryFrom<bytes::Bytes> for TopicRecordValue {
+impl TryFrom<&mut bytes::Bytes> for TopicRecordValue {
     type Error = crate::Error;
 
-    fn try_from(mut bytes: bytes::Bytes) -> std::result::Result<Self, Self::Error> {
+    fn try_from(mut bytes: &mut bytes::Bytes) -> std::result::Result<Self, Self::Error> {
         let name = CompactString::from_be_bytes(&mut bytes)
             .map_err(|e| {
                 std::io::Error::new(
@@ -356,13 +383,12 @@ impl TryFrom<bytes::Bytes> for TopicRecordValue {
             })?
             .to_string();
 
-        let topic_uuid = uuid::Uuid::from_slice(&bytes.slice(..16)).map_err(|_| {
+        let topic_uuid = uuid::Uuid::from_slice(&bytes.split_to(16)).map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "invalid UUID in topic record",
             )
         })?;
-        bytes.advance(16); // Advance past the UUID
         let tagged_fields_count = UnsignedVarInt::from_be_bytes(&mut bytes)?.value();
 
         Ok(Self {
@@ -434,47 +460,17 @@ impl PartitionRecordValue {
     }
 }
 
-impl TryFrom<bytes::Bytes> for PartitionRecordValue {
+impl TryFrom<&mut bytes::Bytes> for PartitionRecordValue {
     type Error = crate::Error;
 
-    fn try_from(mut bytes: bytes::Bytes) -> std::result::Result<Self, Self::Error> {
+    fn try_from(mut bytes: &mut bytes::Bytes) -> std::result::Result<Self, Self::Error> {
         let partition_id = bytes.try_get_i32()?;
-        let topic_bytes = {
-            let mut buf = [0u8; 16];
-            bytes.copy_to_slice(&mut buf);
-            buf
-        };
-        let topic_uuid = uuid::Uuid::from_slice(&topic_bytes).map_err(|_| {
+        let topic_uuid = uuid::Uuid::from_slice(&bytes.split_to(16)).map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Invalid UUID in partition record",
             )
         })?;
-        // bytes.advance(16); // Advance past the UUID
-
-        // let replica_array_len = VarInt::from_be_bytes(&mut bytes)?.value() as usize - 1;
-        // let mut replica_array = Vec::with_capacity(replica_array_len);
-        // for _ in 0..replica_array_len {
-        //     replica_array.push(bytes.try_get_i32()?);
-        // }
-        //
-        // let in_sync_replica_array_len = VarInt::from_be_bytes(&mut bytes)?.value() as usize - 1;
-        // let mut in_sync_replica_array = Vec::with_capacity(in_sync_replica_array_len);
-        // for _ in 0..in_sync_replica_array_len {
-        //     in_sync_replica_array.push(bytes.try_get_i32()?);
-        // }
-        //
-        // let removing_replicas_array_len = VarInt::from_be_bytes(&mut bytes)?.value() as usize - 1;
-        // let mut removing_replicas_array = Vec::with_capacity(removing_replicas_array_len);
-        // for _ in 0..removing_replicas_array_len {
-        //     removing_replicas_array.push(bytes.try_get_i32()?);
-        // }
-        //
-        // let adding_replicas_array_len = VarInt::from_be_bytes(&mut bytes)?.value() as usize - 1;
-        // let mut adding_replicas_array = Vec::with_capacity(adding_replicas_array_len);
-        // for _ in 0..adding_replicas_array_len {
-        //     adding_replicas_array.push(bytes.try_get_i32()?);
-        // }
 
         let replica_array = CompactArray::from_be_bytes(&mut bytes).map_err(|_| {
             std::io::Error::new(
@@ -505,25 +501,13 @@ impl TryFrom<bytes::Bytes> for PartitionRecordValue {
         let leader_epoch = bytes.try_get_i32()?;
         let partition_epoch = bytes.try_get_i32()?;
 
-        // let directories_array = CompactArray::<uuid::Uuid>::from_be_bytes(&mut bytes)
-        //     .map_err(|_| {
-        //         std::io::Error::new(
-        //             std::io::ErrorKind::InvalidData,
-        //             "failed to parse directories array",
-        //         )
-        //     })?
-        //     .into_vec();
-
         let directories_array_len = UnsignedVarInt::from_be_bytes(&mut bytes)?.value() - 1;
         let mut directories_array = Vec::with_capacity(directories_array_len as usize);
         for _ in 0..directories_array_len {
-            let mut uuid_buf = [0u8; 16];
-            bytes.copy_to_slice(&mut uuid_buf);
-
-            directories_array.push(uuid::Uuid::from_slice(&uuid_buf).map_err(|_| {
+            directories_array.push(uuid::Uuid::from_slice(&bytes.split_to(16)).map_err(|_| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "Invalid UUID in partition record",
+                    "invalid UUID in partition record",
                 )
             })?);
         }

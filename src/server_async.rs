@@ -111,12 +111,10 @@ impl Connection {
     fn build_response(&self, request: &RequestV0) -> ResponseV0 {
         let response_header = Self::build_response_header(request);
         let response_body = Self::build_response_body(request);
+        let message_size =
+            response_body.to_be_bytes().len() as i32 + response_header.to_be_bytes().len() as i32;
 
-        ResponseV0::new(
-            response_body.to_be_bytes().len() as i32 + response_header.to_be_bytes().len() as i32,
-            response_header,
-            response_body,
-        )
+        ResponseV0::new(message_size, response_header, response_body)
     }
 
     fn build_response_header(request: &RequestV0) -> ResponseHeader {
@@ -186,15 +184,38 @@ impl Connection {
 
         match metadata {
             Ok(metadata) => {
-                let records = metadata.find_topic_records_by_topic(&topic_name);
+                let topic_records = metadata.find_topic_records_by_topic(&topic_name);
 
-                if let Some(record) = records.first() {
+                println!(
+                    "Found {} topic records for topic {}: {:?}",
+                    topic_records.len(),
+                    topic_name,
+                    topic_records
+                );
+
+                if let Some(record) = topic_records.first() {
                     let topic_uuid = record
                         .record_value()
                         .value()
                         .as_topic_record()
                         .unwrap()
                         .topic_uuid();
+                    let partition_records =
+                        metadata.find_partition_records_by_topic_uuid(topic_uuid);
+                    println!(
+                        "Found {} partition records for topic {} with UUID {}: {:?}",
+                        partition_records.len(),
+                        topic_name,
+                        topic_uuid,
+                        partition_records
+                    );
+                    let partitions = CompactArray::new(
+                        partition_records
+                            .into_iter()
+                            .map(Partition::from)
+                            .collect::<Vec<Partition>>(),
+                    );
+
                     ResponseBody::DescribeTopicPartiotionsResponseV0(
                         DescribeTopicPartiotionsResponseBodyV0::new(
                             0,
@@ -203,18 +224,7 @@ impl Connection {
                                 CompactString::from_str(&topic_name),
                                 topic_uuid,
                                 false,
-                                CompactArray::new(vec![Partition::new(
-                                    ErrorCode::None,
-                                    0,
-                                    0,
-                                    0,
-                                    CompactArray::default(),
-                                    CompactArray::default(),
-                                    VarInt::from(0),
-                                    0,
-                                    0,
-                                    0,
-                                )]),
+                                partitions,
                                 0,
                                 CompactArray::default(),
                             )]),

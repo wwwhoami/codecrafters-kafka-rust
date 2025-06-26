@@ -147,11 +147,11 @@ pub struct CompactArray<T> {
 }
 
 impl<T> CompactArray<T> {
-    pub fn new(array: Vec<T>) -> Self {
+    pub fn from_vec(array: Vec<T>) -> Self {
         Self { array }
     }
 
-    pub fn default() -> Self {
+    pub fn new() -> Self {
         Self { array: Vec::new() }
     }
 

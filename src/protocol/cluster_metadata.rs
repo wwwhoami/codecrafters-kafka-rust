@@ -141,7 +141,7 @@ impl Batch {
 impl TryFrom<&mut bytes::Bytes> for Batch {
     type Error = std::io::Error;
 
-    fn try_from(mut bytes: &mut bytes::Bytes) -> std::result::Result<Self, Self::Error> {
+    fn try_from(bytes: &mut bytes::Bytes) -> std::result::Result<Self, Self::Error> {
         let partition_leader_epoch = bytes.try_get_i32()?;
         let magic_byte = bytes.try_get_u8()?;
         let crc = bytes.try_get_i32()?;

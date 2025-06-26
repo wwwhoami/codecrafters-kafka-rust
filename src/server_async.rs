@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::protocol::{
     bytes::{FromBytes, ToBytes},
-    cluster_metadata::{self, ClusterMetadata},
-    primitives::{ApiKey, CompactArray, CompactString, VarInt},
+    cluster_metadata::ClusterMetadata,
+    primitives::{ApiKey, CompactArray, CompactString},
     request::RequestV0,
     response::{
         ApiVersion, ApiVersionsResponseBodyV4, DescribeTopicPartiotionsResponseBodyV0, ErrorCode,
@@ -142,37 +142,32 @@ impl Connection {
         if (0..=4).contains(&version) {
             ResponseBody::ApiVersionsResponseV4(ApiVersionsResponseBodyV4::new(
                 ErrorCode::None,
-                CompactArray::new(vec![
-                    ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::default()),
-                    ApiVersion::new(
-                        ApiKey::DescribeTopicPartitions,
-                        0,
-                        0,
-                        CompactArray::default(),
-                    ),
+                CompactArray::from_vec(vec![
+                    ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::new()),
+                    ApiVersion::new(ApiKey::DescribeTopicPartitions, 0, 0, CompactArray::new()),
                 ]),
                 0,
-                CompactArray::default(),
+                CompactArray::new(),
             ))
         } else {
             ResponseBody::ApiVersionsResponseV4(ApiVersionsResponseBodyV4::new(
                 ErrorCode::UnsupportedVersion,
-                CompactArray::default(),
+                CompactArray::new(),
                 0,
-                CompactArray::default(),
+                CompactArray::new(),
             ))
         }
     }
 
     fn build_describe_topic_partitions_response(request: &RequestV0) -> ResponseBody {
-        let topic_name = request
+        let topic_names = request
             .body()
             .as_describe_topic_partitions_request_v0()
-            .and_then(|b| b.topics().to_vec().first().map(|t| t.topic().to_string()))
-            .unwrap_or_else(|| {
-                eprintln!("no topic name provided in DescribeTopicPartitionsRequestV0");
-                "unknown".to_string()
-            });
+            .map(|b| b.topics().to_vec())
+            .into_iter()
+            .flatten()
+            .map(|t| t.topic().to_string())
+            .collect::<Vec<String>>();
 
         let metadata =
             File::open("/tmp/kraft-combined-logs/__cluster_metadata-0/00000000000000000000.log")
@@ -184,61 +179,56 @@ impl Connection {
 
         match metadata {
             Ok(metadata) => {
-                let topic_records = metadata.find_topic_records_by_topic(&topic_name);
+                let topics = topic_names
+                    .into_iter()
+                    .map(|topic_name| {
+                        let topic_records = metadata.find_topic_records_by_topic(&topic_name);
 
-                println!(
-                    "Found {} topic records for topic {}: {:?}",
-                    topic_records.len(),
-                    topic_name,
-                    topic_records
-                );
+                        if let Some(record) = topic_records.first() {
+                            let topic_uuid = record
+                                .record_value()
+                                .value()
+                                .as_topic_record()
+                                .unwrap()
+                                .topic_uuid();
 
-                if let Some(record) = topic_records.first() {
-                    let topic_uuid = record
-                        .record_value()
-                        .value()
-                        .as_topic_record()
-                        .unwrap()
-                        .topic_uuid();
-                    let partition_records =
-                        metadata.find_partition_records_by_topic_uuid(topic_uuid);
-                    println!(
-                        "Found {} partition records for topic {} with UUID {}: {:?}",
-                        partition_records.len(),
-                        topic_name,
-                        topic_uuid,
-                        partition_records
-                    );
-                    let partitions = CompactArray::new(
-                        partition_records
-                            .into_iter()
-                            .map(Partition::from)
-                            .collect::<Vec<Partition>>(),
-                    );
+                            let partition_records =
+                                metadata.find_partition_records_by_topic_uuid(topic_uuid);
 
-                    ResponseBody::DescribeTopicPartiotionsResponseV0(
-                        DescribeTopicPartiotionsResponseBodyV0::new(
-                            0,
-                            CompactArray::new(vec![Topic::new(
+                            let partitions = CompactArray::from_vec(
+                                partition_records
+                                    .into_iter()
+                                    .map(Partition::from)
+                                    .collect::<Vec<Partition>>(),
+                            );
+
+                            Topic::new(
                                 ErrorCode::None,
                                 CompactString::from_str(&topic_name),
                                 topic_uuid,
                                 false,
                                 partitions,
                                 0,
-                                CompactArray::default(),
-                            )]),
-                            u8::MAX,
-                            CompactArray::default(),
-                        ),
-                    )
-                } else {
-                    Self::build_unknown_topic_response(&topic_name)
-                }
+                                CompactArray::new(),
+                            )
+                        } else {
+                            Topic::from_unknown_topic(&topic_name)
+                        }
+                    })
+                    .collect::<Vec<Topic>>();
+
+                ResponseBody::DescribeTopicPartiotionsResponseV0(
+                    DescribeTopicPartiotionsResponseBodyV0::new(
+                        0,
+                        CompactArray::from_vec(topics),
+                        u8::MAX,
+                        CompactArray::new(),
+                    ),
+                )
             }
             Err(e) => {
                 println!("error reading cluster metadata: {}", e);
-                Self::build_unknown_topic_response(&topic_name)
+                Self::build_unknown_topic_response("unknown")
             }
         }
     }
@@ -247,17 +237,17 @@ impl Connection {
         ResponseBody::DescribeTopicPartiotionsResponseV0(
             DescribeTopicPartiotionsResponseBodyV0::new(
                 0,
-                CompactArray::new(vec![Topic::new(
+                CompactArray::from_vec(vec![Topic::new(
                     ErrorCode::UnknownTopicOrPartition,
                     CompactString::from_str(topic_name),
                     Uuid::nil(),
                     false,
-                    CompactArray::default(),
+                    CompactArray::new(),
                     0,
-                    CompactArray::default(),
+                    CompactArray::new(),
                 )]),
                 u8::MAX,
-                CompactArray::default(),
+                CompactArray::new(),
             ),
         )
     }

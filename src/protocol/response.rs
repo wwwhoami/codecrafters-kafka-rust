@@ -90,7 +90,7 @@ impl ResponseHeaderV1 {
     pub fn new(correlation_id: i32) -> Self {
         Self {
             correlation_id,
-            tag: CompactArray::default(),
+            tag: CompactArray::new(),
         }
     }
 }
@@ -261,6 +261,18 @@ impl Topic {
             partitions,
             authorized_operations,
             tag,
+        }
+    }
+
+    pub fn from_unknown_topic(topic_name: &str) -> Topic {
+        Self {
+            error_code: ErrorCode::UnknownTopicOrPartition,
+            name: CompactString::from_str(topic_name),
+            id: Uuid::nil(),
+            is_internal: false,
+            partitions: CompactArray::new(),
+            authorized_operations: 0,
+            tag: CompactArray::new(),
         }
     }
 }

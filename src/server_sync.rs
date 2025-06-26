@@ -100,23 +100,18 @@ impl Connection {
         let response_body = match request.header().request_api_version() {
             0..=4 => ApiVersionsResponseBodyV4::new(
                 ErrorCode::None,
-                CompactArray::new(vec![
-                    ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::new(vec![])),
-                    ApiVersion::new(
-                        ApiKey::DescribeTopicPartitions,
-                        0,
-                        0,
-                        CompactArray::new(vec![]),
-                    ),
+                CompactArray::from_vec(vec![
+                    ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::new()),
+                    ApiVersion::new(ApiKey::DescribeTopicPartitions, 0, 0, CompactArray::new()),
                 ]),
                 0,
-                CompactArray::new(vec![]),
+                CompactArray::new(),
             ),
             _ => ApiVersionsResponseBodyV4::new(
                 ErrorCode::UnsupportedVersion,
-                CompactArray::new(vec![]),
+                CompactArray::new(),
                 0,
-                CompactArray::new(vec![]),
+                CompactArray::new(),
             ),
         };
 

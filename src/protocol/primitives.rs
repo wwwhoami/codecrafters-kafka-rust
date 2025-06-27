@@ -1,3 +1,4 @@
+use core::str;
 use std::io::{BufReader, Read};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -6,6 +7,7 @@ use crate::Result;
 
 use super::{
     bytes::{FromBytes, ToBytes},
+    cluster_metadata::Batch,
     error::{self, IoError},
 };
 
@@ -80,13 +82,13 @@ impl FromBytes for NullableString {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct CompactString {
     value: String,
 }
 
 impl CompactString {
-    pub fn new(value: String) -> Self {
+    pub fn from_string(value: String) -> Self {
         Self { value }
     }
 
@@ -107,11 +109,9 @@ impl std::fmt::Display for CompactString {
     }
 }
 
-impl Default for CompactString {
-    fn default() -> Self {
-        CompactString {
-            value: String::new(),
-        }
+impl From<String> for CompactString {
+    fn from(value: String) -> Self {
+        CompactString { value }
     }
 }
 
@@ -221,9 +221,80 @@ where
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CompactNullableBytes {
+    bytes: Bytes,
+}
+
+impl FromBytes for CompactNullableBytes {
+    fn from_be_bytes<B: Buf>(buf: &mut B) -> Result<Self> {
+        let len = UnsignedVarInt::from_be_bytes(buf)?.value;
+
+        if len == 0 {
+            return Ok(CompactNullableBytes {
+                bytes: Bytes::new(),
+            });
+        }
+
+        let mut bytes = vec![0u8; (len - 1) as usize];
+        buf.copy_to_slice(&mut bytes);
+
+        Ok(CompactNullableBytes {
+            bytes: Bytes::from(bytes),
+        })
+    }
+}
+
+impl ToBytes for CompactNullableBytes {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+
+        if self.bytes.is_empty() {
+            buf.put_u8(0);
+            return buf.freeze();
+        }
+
+        // Adjust length to match the protocol
+        let len = UnsignedVarInt::new((self.bytes.len() + 1) as u32);
+        buf.put_slice(len.to_be_bytes().as_ref());
+        buf.put_slice(&self.bytes);
+
+        buf.freeze()
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CompactRecords {
+    records: CompactNullableBytes,
+}
+
+impl From<Batch> for CompactRecords {
+    fn from(batch: Batch) -> Self {
+        CompactRecords {
+            records: CompactNullableBytes {
+                bytes: batch.to_be_bytes(),
+            },
+        }
+    }
+}
+
+impl From<Bytes> for CompactRecords {
+    fn from(bytes: Bytes) -> Self {
+        CompactRecords {
+            records: CompactNullableBytes { bytes },
+        }
+    }
+}
+
+impl ToBytes for CompactRecords {
+    fn to_be_bytes(&self) -> Bytes {
+        self.records.to_be_bytes()
+    }
+}
+
 // VarInt encoding/decoding follows the variable-length zig-zag encoding scheme
 // from Google Protocol Buffers.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct VarInt {
     value: i32,
 }

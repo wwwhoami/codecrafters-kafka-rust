@@ -10,4 +10,5 @@ uuid = "1.17.0"
 anyhow = "1.0.68"                              # error handling
 bytes = "1.10.1"                               # helps manage buffers
 thiserror = "1.0.38"                           # error handling
+crc32c = "0.6.8"
 tokio = { version = "1", features = ["full"] }

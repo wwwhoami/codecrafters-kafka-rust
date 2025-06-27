@@ -5,7 +5,7 @@ use super::{
     bytes::ToBytes,
     cluster_metadata::PartitionRecordValue,
     primitives::{
-        ApiKey, CompactArray, CompactString, NullableString, UnsignedVarInt, VarInt, INT32,
+        ApiKey, CompactArray, CompactRecords, CompactString, NullableString, VarInt, INT32,
     },
 };
 
@@ -388,17 +388,71 @@ pub(crate) struct FetchResponseBodyV16 {
 }
 
 impl FetchResponseBodyV16 {
-    pub(crate) fn new(
-        throttle_time_ms: i32,
-        error_code: ErrorCode,
-        session_id: i32,
-        responses: CompactArray<FetchResponseTopic>,
+    pub(crate) fn with_record_for_topic(
+        topic_id: uuid::Uuid,
+        record_batch: CompactRecords,
     ) -> Self {
         Self {
-            throttle_time_ms,
-            error_code,
-            session_id,
-            responses,
+            throttle_time_ms: 0,
+            error_code: ErrorCode::None,
+            session_id: 0,
+            responses: CompactArray::from_vec(vec![FetchResponseTopic::new(
+                topic_id,
+                CompactArray::from_vec(vec![FetchResponsePartition::new(
+                    0,
+                    ErrorCode::None,
+                    0,
+                    0,
+                    0,
+                    CompactArray::new(),
+                    0,
+                    record_batch,
+                )]),
+            )]),
+            tag: CompactArray::new(),
+        }
+    }
+
+    pub(crate) fn unknown_topic(topic_id: uuid::Uuid) -> Self {
+        Self {
+            throttle_time_ms: 0,
+            error_code: ErrorCode::None,
+            session_id: 0,
+            responses: CompactArray::from_vec(vec![FetchResponseTopic::new(
+                topic_id,
+                CompactArray::from_vec(vec![FetchResponsePartition::new(
+                    0,
+                    ErrorCode::UnknownTopic,
+                    0,
+                    0,
+                    0,
+                    CompactArray::new(),
+                    0,
+                    Default::default(),
+                )]),
+            )]),
+            tag: CompactArray::new(),
+        }
+    }
+
+    pub(crate) fn empty_topic(topic_id: uuid::Uuid) -> Self {
+        Self {
+            throttle_time_ms: 0,
+            error_code: ErrorCode::None,
+            session_id: 0,
+            responses: CompactArray::from_vec(vec![FetchResponseTopic::new(
+                topic_id,
+                CompactArray::from_vec(vec![FetchResponsePartition::new(
+                    0,
+                    ErrorCode::None,
+                    0,
+                    0,
+                    0,
+                    CompactArray::new(),
+                    0,
+                    Default::default(),
+                )]),
+            )]),
             tag: CompactArray::new(),
         }
     }
@@ -471,7 +525,7 @@ pub(crate) struct FetchResponsePartition {
     log_start_offset: i64,
     aborted_transactions: CompactArray<AbortedTransaction>,
     prefrred_read_replica: i32,
-    records: CompactString,
+    records: CompactRecords,
     tag: CompactArray<NullableString>,
 }
 
@@ -484,7 +538,7 @@ impl FetchResponsePartition {
         log_start_offset: i64,
         aborted_transactions: CompactArray<AbortedTransaction>,
         prefrred_read_replica: i32,
-        records: CompactString,
+        records: CompactRecords,
     ) -> Self {
         Self {
             partition_index,

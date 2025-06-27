@@ -41,6 +41,13 @@ impl ClusterMetadata {
             .collect()
     }
 
+    pub fn find_topic_records_by_id(&self, topic_id: &uuid::Uuid) -> Vec<&Record> {
+        self.batches
+            .values()
+            .flat_map(|batch| batch.find_topic_records_by_id(topic_id))
+            .collect()
+    }
+
     pub fn find_partition_records_by_topic_uuid(
         &self,
         topic_uuid: uuid::Uuid,
@@ -110,6 +117,19 @@ impl Batch {
             .filter(|record| {
                 if let RecordValueByType::Topic(topic_value) = &record.record_value.value {
                     topic_value.name == topic
+                } else {
+                    false
+                }
+            })
+            .collect()
+    }
+
+    fn find_topic_records_by_id(&self, topic_id: &uuid::Uuid) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| {
+                if let RecordValueByType::Topic(topic_value) = &record.record_value.value {
+                    &topic_value.topic_uuid == topic_id
                 } else {
                     false
                 }
@@ -367,6 +387,10 @@ pub struct TopicRecordValue {
 impl TopicRecordValue {
     pub fn topic_uuid(&self) -> uuid::Uuid {
         self.topic_uuid
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 

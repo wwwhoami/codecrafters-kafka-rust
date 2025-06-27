@@ -1,6 +1,10 @@
-use std::{fs::File, net::SocketAddr};
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+    net::SocketAddr,
+};
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -14,8 +18,8 @@ use crate::protocol::{
     request::{DescribeTopicPartitionsRequestV0, FetchRequestV16, RequestV0, TopicsPartitions},
     response::{
         ApiVersion, ApiVersionsResponseBodyV4, DescribeTopicPartiotionsResponseBodyV0, ErrorCode,
-        FetchResponseBodyV16, FetchResponsePartition, FetchResponseTopic, Partition, ResponseBody,
-        ResponseHeader, ResponseHeaderV0, ResponseHeaderV1, ResponseV0, Topic,
+        FetchResponseBodyV16, Partition, ResponseBody, ResponseHeader, ResponseHeaderV0,
+        ResponseHeaderV1, ResponseV0, Topic,
     },
 };
 
@@ -269,23 +273,81 @@ impl Connection {
             return ResponseBody::FetchResponseV16(FetchResponseBodyV16::default());
         }
 
-        ResponseBody::FetchResponseV16(FetchResponseBodyV16::new(
-            0,
-            ErrorCode::None,
-            0,
-            CompactArray::from_vec(vec![FetchResponseTopic::new(
-                topic_id,
-                CompactArray::from_vec(vec![FetchResponsePartition::new(
-                    0,
-                    ErrorCode::UnknownTopic,
-                    0,
-                    0,
-                    0,
-                    CompactArray::new(),
-                    0,
-                    CompactString::default(),
-                )]),
-            )]),
-        ))
+        let metadata =
+            File::open("/tmp/kraft-combined-logs/__cluster_metadata-0/00000000000000000000.log")
+                .map_err(|e| anyhow::anyhow!("failed to read cluster metadata {}", e))
+                .and_then(|file| {
+                    ClusterMetadata::try_from(file)
+                        .map_err(|e| anyhow::anyhow!("failed to parse cluster metadata: {}", e))
+                });
+
+        if metadata.is_err() {
+            println!(
+                "Error reading cluster metadata: {}",
+                metadata.as_ref().err().unwrap()
+            );
+
+            return ResponseBody::FetchResponseV16(FetchResponseBodyV16::unknown_topic(topic_id));
+        }
+
+        let metadata = metadata.unwrap();
+        let topic_records = metadata.find_topic_records_by_id(&topic_id);
+
+        if topic_records.is_empty() {
+            println!("No topic records found for topic ID: {}", topic_id);
+            return ResponseBody::FetchResponseV16(FetchResponseBodyV16::unknown_topic(topic_id));
+        }
+
+        let topic_name = topic_records
+            .first()
+            .expect("topic records should not be empty")
+            .record_value()
+            .value()
+            .as_topic_record()
+            .expect("record value should be a topic record")
+            .name();
+
+        if topic_name.is_empty() {
+            println!("Topic name is empty for topic ID: {}", topic_id);
+
+            return ResponseBody::FetchResponseV16(FetchResponseBodyV16::empty_topic(topic_id));
+        }
+
+        let partition_ids = metadata
+            .find_partition_records_by_topic_uuid(topic_id)
+            .iter()
+            .map(|pr| pr.partition_id())
+            .collect::<Vec<i32>>();
+
+        match &partition_ids.first() {
+            Some(partition_id) => {
+                let filename = format!(
+                    "/tmp/kraft-combined-logs/{}-{}/00000000000000000000.log",
+                    topic_name, partition_id
+                );
+                let file = File::open(filename);
+                match file {
+                    Err(e) => {
+                        println!(
+                            "Failed to open file for topic: {}, partition: {}, error: {}",
+                            topic_name, partition_id, e
+                        );
+                        ResponseBody::FetchResponseV16(FetchResponseBodyV16::empty_topic(topic_id))
+                    }
+                    Ok(file) => {
+                        let mut reader = BufReader::new(file);
+                        let mut buf = Vec::new();
+                        reader.read_to_end(&mut buf).unwrap();
+                        let bytes = Bytes::from(buf);
+
+                        ResponseBody::FetchResponseV16(FetchResponseBodyV16::with_record_for_topic(
+                            topic_id,
+                            bytes.into(),
+                        ))
+                    }
+                }
+            }
+            _ => ResponseBody::FetchResponseV16(FetchResponseBodyV16::empty_topic(topic_id)),
+        }
     }
 }

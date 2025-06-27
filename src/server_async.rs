@@ -125,6 +125,9 @@ impl Connection {
             ApiKey::DescribeTopicPartitions => {
                 ResponseHeader::V1(ResponseHeaderV1::new(request.header().correlation_id()))
             }
+            ApiKey::Fetch => {
+                ResponseHeader::V1(ResponseHeaderV1::new(request.header().correlation_id()))
+            }
         }
     }
 
@@ -134,6 +137,7 @@ impl Connection {
             ApiKey::DescribeTopicPartitions => {
                 Self::build_describe_topic_partitions_response(request)
             }
+            ApiKey::Fetch => Self::build_fetch_response(request),
         }
     }
 
@@ -247,6 +251,19 @@ impl Connection {
                     0,
                     CompactArray::new(),
                 )]),
+                u8::MAX,
+                CompactArray::new(),
+            ),
+        )
+    }
+
+    fn build_fetch_response(request: &RequestV0) -> ResponseBody {
+        println!("Got request: {:?}", request);
+
+        ResponseBody::DescribeTopicPartiotionsResponseV0(
+            DescribeTopicPartiotionsResponseBodyV0::new(
+                0,
+                CompactArray::new(),
                 u8::MAX,
                 CompactArray::new(),
             ),

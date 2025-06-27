@@ -81,6 +81,7 @@ impl FromBytes for RequestHeaderV2 {
 pub enum RequestBody {
     ApiVersionsRequestV4(ApiVersionsRequestV4),
     DescribeTopicPartitionsRequestV0(DescribeTopicPartitionsRequestV0),
+    FetchRequestV4(FetchRequestV4),
 }
 
 impl RequestBody {
@@ -141,6 +142,10 @@ impl FromBytes for RequestV0 {
                 DescribeTopicPartitionsRequestV0::from_be_bytes(&mut buf).map_err(|e| {
                     anyhow::anyhow!("failed to parse DescribeTopicPartitionsRequestV0: {}", e)
                 })?,
+            ),
+            ApiKey::Fetch => RequestBody::FetchRequestV4(
+                FetchRequestV4::from_be_bytes(&mut buf)
+                    .map_err(|e| anyhow::anyhow!("failed to parse FetchRequestV4: {}", e))?,
             ),
         };
 
@@ -256,5 +261,99 @@ impl FromBytes for Topic {
         })?;
 
         Ok(Topic { topic, tag })
+    }
+}
+
+#[derive(Debug)]
+pub struct FetchRequestV4 {
+    replica_id: i32,
+    max_wait_ms: i32,
+    min_bytes: i32,
+    max_bytes: i32,
+    isolation_level: i8,
+    topics: CompactArray<TopicsPartitions>,
+}
+
+impl FromBytes for FetchRequestV4 {
+    fn from_be_bytes<B: bytes::Buf>(buf: &mut B) -> Result<Self> {
+        let replica_id = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for replica_id: {}", e))?;
+
+        let max_wait_ms = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for max_wait_ms: {}", e))?;
+
+        let min_bytes = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for min_bytes: {}", e))?;
+
+        let max_bytes = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for max_bytes: {}", e))?;
+
+        let isolation_level = buf
+            .try_get_i8()
+            .map_err(|e| anyhow::anyhow!("failed to parse i8 for isolation_level: {}", e))?;
+
+        let topics = CompactArray::<TopicsPartitions>::from_be_bytes(buf).map_err(|e| {
+            anyhow::anyhow!("failed to parse CompactArray<TopicsPartitions>: {}", e)
+        })?;
+
+        Ok(FetchRequestV4 {
+            replica_id,
+            max_wait_ms,
+            min_bytes,
+            max_bytes,
+            isolation_level,
+            topics,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct TopicsPartitions {
+    topic: CompactString,
+    partitions: CompactArray<Partition>,
+}
+
+impl FromBytes for TopicsPartitions {
+    fn from_be_bytes<B: bytes::Buf>(buf: &mut B) -> Result<Self> {
+        let topic = CompactString::from_be_bytes(buf)
+            .map_err(|e| anyhow::anyhow!("failed to parse CompactString for topic: {}", e))?;
+
+        let partitions = CompactArray::<Partition>::from_be_bytes(buf)
+            .map_err(|e| anyhow::anyhow!("failed to parse CompactArray<Partition>: {}", e))?;
+
+        Ok(TopicsPartitions { topic, partitions })
+    }
+}
+
+#[derive(Debug)]
+pub struct Partition {
+    partition: i32,
+    fetch_offset: i64,
+    partition_max_bytes: i32,
+}
+
+impl FromBytes for Partition {
+    fn from_be_bytes<B: bytes::Buf>(buf: &mut B) -> Result<Self> {
+        let partition = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for partition: {}", e))?;
+
+        let fetch_offset = buf
+            .try_get_i64()
+            .map_err(|e| anyhow::anyhow!("failed to parse i64 for fetch_offset: {}", e))?;
+
+        let partition_max_bytes = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for partition_max_bytes: {}", e))?;
+
+        Ok(Partition {
+            partition,
+            fetch_offset,
+            partition_max_bytes,
+        })
     }
 }

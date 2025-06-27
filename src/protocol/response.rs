@@ -15,6 +15,7 @@ pub enum ErrorCode {
     UnknownServerError = -1,
     UnsupportedVersion = 35,
     UnknownTopicOrPartition = 3,
+    UnknownTopic = 100,
 }
 
 #[derive(Debug)]
@@ -401,8 +402,10 @@ impl FetchResponseBodyV16 {
             tag: CompactArray::new(),
         }
     }
+}
 
-    pub(crate) fn default() -> Self {
+impl Default for FetchResponseBodyV16 {
+    fn default() -> Self {
         Self {
             throttle_time_ms: 0,
             error_code: ErrorCode::None,
@@ -431,6 +434,20 @@ impl ToBytes for FetchResponseBodyV16 {
 pub(crate) struct FetchResponseTopic {
     topic_id: uuid::Uuid,
     partitions: CompactArray<FetchResponsePartition>,
+    tag: CompactArray<NullableString>,
+}
+
+impl FetchResponseTopic {
+    pub(crate) fn new(
+        topic_id: uuid::Uuid,
+        partitions: CompactArray<FetchResponsePartition>,
+    ) -> Self {
+        Self {
+            topic_id,
+            partitions,
+            tag: CompactArray::new(),
+        }
+    }
 }
 
 impl ToBytes for FetchResponseTopic {
@@ -439,13 +456,14 @@ impl ToBytes for FetchResponseTopic {
 
         buf.extend_from_slice(self.topic_id.as_bytes());
         buf.extend_from_slice(&self.partitions.to_be_bytes());
+        buf.extend_from_slice(&self.tag.to_be_bytes());
 
         buf.freeze()
     }
 }
 
 #[derive(Debug)]
-struct FetchResponsePartition {
+pub(crate) struct FetchResponsePartition {
     partition_index: i32,
     error_code: ErrorCode,
     high_watermark: i64,
@@ -454,6 +472,32 @@ struct FetchResponsePartition {
     aborted_transactions: CompactArray<AbortedTransaction>,
     prefrred_read_replica: i32,
     records: CompactString,
+    tag: CompactArray<NullableString>,
+}
+
+impl FetchResponsePartition {
+    pub(crate) fn new(
+        partition_index: i32,
+        error_code: ErrorCode,
+        high_watermark: i64,
+        last_stable_offset: i64,
+        log_start_offset: i64,
+        aborted_transactions: CompactArray<AbortedTransaction>,
+        prefrred_read_replica: i32,
+        records: CompactString,
+    ) -> Self {
+        Self {
+            partition_index,
+            error_code,
+            high_watermark,
+            last_stable_offset,
+            log_start_offset,
+            aborted_transactions,
+            prefrred_read_replica,
+            records,
+            tag: CompactArray::new(),
+        }
+    }
 }
 
 impl ToBytes for FetchResponsePartition {
@@ -468,13 +512,14 @@ impl ToBytes for FetchResponsePartition {
         buf.extend_from_slice(&self.aborted_transactions.to_be_bytes());
         buf.put_i32(self.prefrred_read_replica);
         buf.extend_from_slice(&self.records.to_be_bytes());
+        buf.extend_from_slice(&self.tag.to_be_bytes());
 
         buf.freeze()
     }
 }
 
 #[derive(Debug)]
-struct AbortedTransaction {
+pub(crate) struct AbortedTransaction {
     producer_id: i64,
     first_offset: i64,
 }

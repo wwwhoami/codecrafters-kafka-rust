@@ -107,6 +107,14 @@ impl std::fmt::Display for CompactString {
     }
 }
 
+impl Default for CompactString {
+    fn default() -> Self {
+        CompactString {
+            value: String::new(),
+        }
+    }
+}
+
 impl ToBytes for CompactString {
     fn to_be_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();

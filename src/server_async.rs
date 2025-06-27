@@ -11,11 +11,11 @@ use crate::protocol::{
     bytes::{FromBytes, ToBytes},
     cluster_metadata::ClusterMetadata,
     primitives::{ApiKey, CompactArray, CompactString},
-    request::{DescribeTopicPartitionsRequestV0, RequestV0},
+    request::{DescribeTopicPartitionsRequestV0, FetchRequestV16, RequestV0, TopicsPartitions},
     response::{
         ApiVersion, ApiVersionsResponseBodyV4, DescribeTopicPartiotionsResponseBodyV0, ErrorCode,
-        FetchResponseBodyV16, Partition, ResponseBody, ResponseHeader, ResponseHeaderV0,
-        ResponseHeaderV1, ResponseV0, Topic,
+        FetchResponseBodyV16, FetchResponsePartition, FetchResponseTopic, Partition, ResponseBody,
+        ResponseHeader, ResponseHeaderV0, ResponseHeaderV1, ResponseV0, Topic,
     },
 };
 
@@ -254,7 +254,38 @@ impl Connection {
         )
     }
 
-    fn build_fetch_response(_: &RequestV0) -> ResponseBody {
-        ResponseBody::FetchResponseV16(FetchResponseBodyV16::default())
+    fn build_fetch_response(request: &RequestV0) -> ResponseBody {
+        let topic_id = request
+            .body()
+            .as_fetch_request_v16()
+            .unwrap_or(&FetchRequestV16::default())
+            .topics()
+            .to_vec()
+            .first()
+            .unwrap_or(&TopicsPartitions::default())
+            .topic_id();
+
+        if topic_id.is_nil() {
+            return ResponseBody::FetchResponseV16(FetchResponseBodyV16::default());
+        }
+
+        ResponseBody::FetchResponseV16(FetchResponseBodyV16::new(
+            0,
+            ErrorCode::None,
+            0,
+            CompactArray::from_vec(vec![FetchResponseTopic::new(
+                topic_id,
+                CompactArray::from_vec(vec![FetchResponsePartition::new(
+                    0,
+                    ErrorCode::UnknownTopic,
+                    0,
+                    0,
+                    0,
+                    CompactArray::new(),
+                    0,
+                    CompactString::default(),
+                )]),
+            )]),
+        ))
     }
 }

@@ -94,6 +94,14 @@ impl RequestBody {
             None
         }
     }
+
+    pub fn as_fetch_request_v16(&self) -> Option<&FetchRequestV16> {
+        if let Self::FetchRequestV16(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -283,7 +291,7 @@ impl FromBytes for Topic {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FetchRequestV16 {
     max_wait_ms: i32,
     min_bytes: i32,
@@ -294,6 +302,28 @@ pub struct FetchRequestV16 {
     topics: CompactArray<TopicsPartitions>,
     forgotten_topics: CompactArray<ForgottenTopic>,
     rack_id: CompactString,
+}
+
+impl FetchRequestV16 {
+    pub fn topics(&self) -> &CompactArray<TopicsPartitions> {
+        &self.topics
+    }
+}
+
+impl Default for FetchRequestV16 {
+    fn default() -> Self {
+        FetchRequestV16 {
+            max_wait_ms: 500,
+            min_bytes: 1,
+            max_bytes: 1048576,
+            isolation_level: 0,
+            session_id: -1,
+            session_epoch: -1,
+            topics: CompactArray::new(),
+            forgotten_topics: CompactArray::new(),
+            rack_id: CompactString::default(),
+        }
+    }
 }
 
 impl FromBytes for FetchRequestV16 {
@@ -346,11 +376,27 @@ impl FromBytes for FetchRequestV16 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TopicsPartitions {
     topic_id: uuid::Uuid,
     partitions: CompactArray<Partition>,
     tag: CompactArray<NullableString>,
+}
+
+impl TopicsPartitions {
+    pub fn topic_id(&self) -> uuid::Uuid {
+        self.topic_id
+    }
+}
+
+impl Default for TopicsPartitions {
+    fn default() -> Self {
+        TopicsPartitions {
+            topic_id: uuid::Uuid::nil(),
+            partitions: CompactArray::new(),
+            tag: CompactArray::new(),
+        }
+    }
 }
 
 impl FromBytes for TopicsPartitions {
@@ -379,7 +425,7 @@ impl FromBytes for TopicsPartitions {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Partition {
     partition: i32,
     current_leader_epoch: i32,
@@ -426,7 +472,7 @@ impl FromBytes for Partition {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ForgottenTopic {
     topic_id: uuid::Uuid,
     partitions: i32,

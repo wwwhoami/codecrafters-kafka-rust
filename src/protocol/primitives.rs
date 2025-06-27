@@ -13,6 +13,7 @@ use super::{
 pub(crate) enum ApiKey {
     ApiVersions = 18,
     DescribeTopicPartitions = 75,
+    Fetch = 1,
 }
 
 impl ToBytes for ApiKey {
@@ -21,6 +22,7 @@ impl ToBytes for ApiKey {
         let val = match self {
             ApiKey::ApiVersions => 18_i16,
             ApiKey::DescribeTopicPartitions => 75_i16,
+            ApiKey::Fetch => 1_i16,
         };
 
         buf.put_i16(val);

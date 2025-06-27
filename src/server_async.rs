@@ -145,6 +145,7 @@ impl Connection {
                 CompactArray::from_vec(vec![
                     ApiVersion::new(ApiKey::ApiVersions, 0, 4, CompactArray::new()),
                     ApiVersion::new(ApiKey::DescribeTopicPartitions, 0, 0, CompactArray::new()),
+                    ApiVersion::new(ApiKey::Fetch, 4, 16, CompactArray::new()),
                 ]),
                 0,
                 CompactArray::new(),

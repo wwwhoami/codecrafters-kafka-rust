@@ -14,8 +14,8 @@ use crate::protocol::{
     request::RequestV0,
     response::{
         ApiVersion, ApiVersionsResponseBodyV4, DescribeTopicPartiotionsResponseBodyV0, ErrorCode,
-        Partition, ResponseBody, ResponseHeader, ResponseHeaderV0, ResponseHeaderV1, ResponseV0,
-        Topic,
+        FetchResponseBodyV16, Partition, ResponseBody, ResponseHeader, ResponseHeaderV0,
+        ResponseHeaderV1, ResponseV0, Topic,
     },
 };
 
@@ -257,16 +257,7 @@ impl Connection {
         )
     }
 
-    fn build_fetch_response(request: &RequestV0) -> ResponseBody {
-        println!("Got request: {:?}", request);
-
-        ResponseBody::DescribeTopicPartiotionsResponseV0(
-            DescribeTopicPartiotionsResponseBodyV0::new(
-                0,
-                CompactArray::new(),
-                u8::MAX,
-                CompactArray::new(),
-            ),
-        )
+    fn build_fetch_response(_: &RequestV0) -> ResponseBody {
+        ResponseBody::FetchResponseV16(FetchResponseBodyV16::default())
     }
 }

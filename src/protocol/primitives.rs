@@ -37,6 +37,7 @@ impl FromBytes for ApiKey {
         match key {
             18 => Ok(ApiKey::ApiVersions),
             75 => Ok(ApiKey::DescribeTopicPartitions),
+            1 => Ok(ApiKey::Fetch),
             _ => Err(error::UnsupportedApiKeyError::new(key).into()),
         }
     }

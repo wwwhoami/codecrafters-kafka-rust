@@ -81,7 +81,7 @@ impl FromBytes for RequestHeaderV2 {
 pub enum RequestBody {
     ApiVersionsRequestV4(ApiVersionsRequestV4),
     DescribeTopicPartitionsRequestV0(DescribeTopicPartitionsRequestV0),
-    FetchRequestV4(FetchRequestV4),
+    FetchRequestV16(FetchRequestV16),
 }
 
 impl RequestBody {
@@ -143,8 +143,8 @@ impl FromBytes for RequestV0 {
                     anyhow::anyhow!("failed to parse DescribeTopicPartitionsRequestV0: {}", e)
                 })?,
             ),
-            ApiKey::Fetch => RequestBody::FetchRequestV4(
-                FetchRequestV4::from_be_bytes(&mut buf)
+            ApiKey::Fetch => RequestBody::FetchRequestV16(
+                FetchRequestV16::from_be_bytes(&mut buf)
                     .map_err(|e| anyhow::anyhow!("failed to parse FetchRequestV4: {}", e))?,
             ),
         };
@@ -265,21 +265,20 @@ impl FromBytes for Topic {
 }
 
 #[derive(Debug)]
-pub struct FetchRequestV4 {
-    replica_id: i32,
+pub struct FetchRequestV16 {
     max_wait_ms: i32,
     min_bytes: i32,
     max_bytes: i32,
     isolation_level: i8,
+    session_id: i32,
+    session_epoch: i32,
     topics: CompactArray<TopicsPartitions>,
+    forgotten_topics: CompactArray<ForgottenTopic>,
+    rack_id: CompactString,
 }
 
-impl FromBytes for FetchRequestV4 {
+impl FromBytes for FetchRequestV16 {
     fn from_be_bytes<B: bytes::Buf>(buf: &mut B) -> Result<Self> {
-        let replica_id = buf
-            .try_get_i32()
-            .map_err(|e| anyhow::anyhow!("failed to parse i32 for replica_id: {}", e))?;
-
         let max_wait_ms = buf
             .try_get_i32()
             .map_err(|e| anyhow::anyhow!("failed to parse i32 for max_wait_ms: {}", e))?;
@@ -296,43 +295,78 @@ impl FromBytes for FetchRequestV4 {
             .try_get_i8()
             .map_err(|e| anyhow::anyhow!("failed to parse i8 for isolation_level: {}", e))?;
 
+        let session_id = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for session_id: {}", e))?;
+
+        let session_epoch = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for session_epoch: {}", e))?;
+
         let topics = CompactArray::<TopicsPartitions>::from_be_bytes(buf).map_err(|e| {
             anyhow::anyhow!("failed to parse CompactArray<TopicsPartitions>: {}", e)
         })?;
 
-        Ok(FetchRequestV4 {
-            replica_id,
+        let forgotten_topics = CompactArray::<ForgottenTopic>::from_be_bytes(buf)
+            .map_err(|e| anyhow::anyhow!("failed to parse CompactArray<ForgottenTopic>: {}", e))?;
+
+        let rack_id = CompactString::from_be_bytes(buf)
+            .map_err(|e| anyhow::anyhow!("failed to parse CompactString for rack_id: {}", e))?;
+
+        Ok(FetchRequestV16 {
             max_wait_ms,
             min_bytes,
             max_bytes,
             isolation_level,
+            session_id,
+            session_epoch,
             topics,
+            forgotten_topics,
+            rack_id,
         })
     }
 }
 
 #[derive(Debug)]
 pub struct TopicsPartitions {
-    topic: CompactString,
+    topic_id: uuid::Uuid,
     partitions: CompactArray<Partition>,
+    tag: CompactArray<NullableString>,
 }
 
 impl FromBytes for TopicsPartitions {
     fn from_be_bytes<B: bytes::Buf>(buf: &mut B) -> Result<Self> {
-        let topic = CompactString::from_be_bytes(buf)
-            .map_err(|e| anyhow::anyhow!("failed to parse CompactString for topic: {}", e))?;
+        let mut buf16 = [0u8; 16];
+        buf.copy_to_slice(&mut buf16);
+
+        let topic_id = uuid::Uuid::from_slice(&buf16)
+            .map_err(|e| anyhow::anyhow!("failed to parse Uuid for topic_id: {}", e))?;
 
         let partitions = CompactArray::<Partition>::from_be_bytes(buf)
             .map_err(|e| anyhow::anyhow!("failed to parse CompactArray<Partition>: {}", e))?;
 
-        Ok(TopicsPartitions { topic, partitions })
+        let tag = CompactArray::<NullableString>::from_be_bytes(buf).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to parse CompactArray<NullableString> for tag: {}",
+                e
+            )
+        })?;
+
+        Ok(TopicsPartitions {
+            topic_id,
+            partitions,
+            tag,
+        })
     }
 }
 
 #[derive(Debug)]
 pub struct Partition {
     partition: i32,
+    current_leader_epoch: i32,
     fetch_offset: i64,
+    last_fetched_epoch: i32,
+    log_start_offset: i64,
     partition_max_bytes: i32,
 }
 
@@ -342,9 +376,21 @@ impl FromBytes for Partition {
             .try_get_i32()
             .map_err(|e| anyhow::anyhow!("failed to parse i32 for partition: {}", e))?;
 
+        let current_leader_epoch = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for current_leader_epoch: {}", e))?;
+
         let fetch_offset = buf
             .try_get_i64()
             .map_err(|e| anyhow::anyhow!("failed to parse i64 for fetch_offset: {}", e))?;
+
+        let last_fetched_epoch = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for last_fetched_epoch: {}", e))?;
+
+        let log_start_offset = buf
+            .try_get_i64()
+            .map_err(|e| anyhow::anyhow!("failed to parse i64 for log_start_offset: {}", e))?;
 
         let partition_max_bytes = buf
             .try_get_i32()
@@ -352,8 +398,36 @@ impl FromBytes for Partition {
 
         Ok(Partition {
             partition,
+            current_leader_epoch,
             fetch_offset,
+            last_fetched_epoch,
+            log_start_offset,
             partition_max_bytes,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ForgottenTopic {
+    topic_id: uuid::Uuid,
+    partitions: i32,
+}
+
+impl FromBytes for ForgottenTopic {
+    fn from_be_bytes<B: bytes::Buf>(buf: &mut B) -> Result<Self> {
+        let mut buf16 = [0u8; 16];
+        buf.copy_to_slice(&mut buf16);
+
+        let topic_id = uuid::Uuid::from_slice(&buf16)
+            .map_err(|e| anyhow::anyhow!("failed to parse Uuid for topic_id: {}", e))?;
+
+        let partitions = buf
+            .try_get_i32()
+            .map_err(|e| anyhow::anyhow!("failed to parse i32 for partitions: {}", e))?;
+
+        Ok(ForgottenTopic {
+            topic_id,
+            partitions,
         })
     }
 }

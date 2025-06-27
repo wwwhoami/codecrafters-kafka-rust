@@ -4,10 +4,12 @@ use uuid::Uuid;
 use super::{
     bytes::ToBytes,
     cluster_metadata::PartitionRecordValue,
-    primitives::{ApiKey, CompactArray, CompactString, NullableString, VarInt, INT32},
+    primitives::{
+        ApiKey, CompactArray, CompactString, NullableString, UnsignedVarInt, VarInt, INT32,
+    },
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
     None = 0,
     UnknownServerError = -1,
@@ -110,6 +112,7 @@ impl ToBytes for ResponseHeaderV1 {
 pub enum ResponseBody {
     ApiVersionsResponseV4(ApiVersionsResponseBodyV4),
     DescribeTopicPartiotionsResponseV0(DescribeTopicPartiotionsResponseBodyV0),
+    FetchResponseV16(FetchResponseBodyV16),
 }
 
 impl ToBytes for ResponseBody {
@@ -117,6 +120,7 @@ impl ToBytes for ResponseBody {
         match self {
             ResponseBody::ApiVersionsResponseV4(body) => body.to_be_bytes(),
             ResponseBody::DescribeTopicPartiotionsResponseV0(body) => body.to_be_bytes(),
+            ResponseBody::FetchResponseV16(body) => body.to_be_bytes(),
         }
     }
 }
@@ -149,7 +153,7 @@ impl ToBytes for ApiVersionsResponseBodyV4 {
     fn to_be_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
 
-        buf.put_i16(self.error_code.clone() as i16);
+        buf.put_i16(self.error_code as i16);
         buf.extend_from_slice(&self.api_versions.to_be_bytes());
         buf.put_i32(self.throttle_time_ms);
         buf.extend_from_slice(&self.tag.to_be_bytes());
@@ -281,7 +285,7 @@ impl ToBytes for Topic {
     fn to_be_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
 
-        buf.put_i16(self.error_code.clone() as i16);
+        buf.put_i16(self.error_code as i16);
         buf.extend_from_slice(&self.name.to_be_bytes());
         buf.extend_from_slice(self.id.as_bytes());
         buf.put_u8(self.is_internal as u8);
@@ -341,7 +345,7 @@ impl ToBytes for Partition {
     fn to_be_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
 
-        buf.put_i16(self.error_code.clone() as i16);
+        buf.put_i16(self.error_code as i16);
         buf.put_i32(self.partition_index);
         buf.put_i32(self.leader);
         buf.put_i32(self.leader_epoch);
@@ -370,5 +374,118 @@ impl From<&PartitionRecordValue> for Partition {
             offline_replicas: 0,
             tag_buffer: 0,
         }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct FetchResponseBodyV16 {
+    throttle_time_ms: i32,
+    error_code: ErrorCode,
+    session_id: i32,
+    responses: CompactArray<FetchResponseTopic>,
+    tag: CompactArray<NullableString>,
+}
+
+impl FetchResponseBodyV16 {
+    pub(crate) fn new(
+        throttle_time_ms: i32,
+        error_code: ErrorCode,
+        session_id: i32,
+        responses: CompactArray<FetchResponseTopic>,
+    ) -> Self {
+        Self {
+            throttle_time_ms,
+            error_code,
+            session_id,
+            responses,
+            tag: CompactArray::new(),
+        }
+    }
+
+    pub(crate) fn default() -> Self {
+        Self {
+            throttle_time_ms: 0,
+            error_code: ErrorCode::None,
+            session_id: 0,
+            responses: CompactArray::new(),
+            tag: CompactArray::new(),
+        }
+    }
+}
+
+impl ToBytes for FetchResponseBodyV16 {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+
+        buf.put_i32(self.throttle_time_ms);
+        buf.put_i16(self.error_code as i16);
+        buf.put_i32(self.session_id);
+        buf.extend_from_slice(&self.responses.to_be_bytes());
+        buf.extend_from_slice(&self.tag.to_be_bytes());
+
+        buf.freeze()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct FetchResponseTopic {
+    topic_id: uuid::Uuid,
+    partitions: CompactArray<FetchResponsePartition>,
+}
+
+impl ToBytes for FetchResponseTopic {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+
+        buf.extend_from_slice(self.topic_id.as_bytes());
+        buf.extend_from_slice(&self.partitions.to_be_bytes());
+
+        buf.freeze()
+    }
+}
+
+#[derive(Debug)]
+struct FetchResponsePartition {
+    partition_index: i32,
+    error_code: ErrorCode,
+    high_watermark: i64,
+    last_stable_offset: i64,
+    log_start_offset: i64,
+    aborted_transactions: CompactArray<AbortedTransaction>,
+    prefrred_read_replica: i32,
+    records: CompactString,
+}
+
+impl ToBytes for FetchResponsePartition {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+
+        buf.put_i32(self.partition_index);
+        buf.put_i16(self.error_code as i16);
+        buf.put_i64(self.high_watermark);
+        buf.put_i64(self.last_stable_offset);
+        buf.put_i64(self.log_start_offset);
+        buf.extend_from_slice(&self.aborted_transactions.to_be_bytes());
+        buf.put_i32(self.prefrred_read_replica);
+        buf.extend_from_slice(&self.records.to_be_bytes());
+
+        buf.freeze()
+    }
+}
+
+#[derive(Debug)]
+struct AbortedTransaction {
+    producer_id: i64,
+    first_offset: i64,
+}
+
+impl ToBytes for AbortedTransaction {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+
+        buf.put_i64(self.producer_id);
+        buf.put_i64(self.first_offset);
+
+        buf.freeze()
     }
 }

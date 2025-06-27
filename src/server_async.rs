@@ -11,7 +11,7 @@ use crate::protocol::{
     bytes::{FromBytes, ToBytes},
     cluster_metadata::ClusterMetadata,
     primitives::{ApiKey, CompactArray, CompactString},
-    request::RequestV0,
+    request::{DescribeTopicPartitionsRequestV0, RequestV0},
     response::{
         ApiVersion, ApiVersionsResponseBodyV4, DescribeTopicPartiotionsResponseBodyV0, ErrorCode,
         FetchResponseBodyV16, Partition, ResponseBody, ResponseHeader, ResponseHeaderV0,
@@ -168,11 +168,8 @@ impl Connection {
         let topic_names = request
             .body()
             .as_describe_topic_partitions_request_v0()
-            .map(|b| b.topics().to_vec())
-            .into_iter()
-            .flatten()
-            .map(|t| t.topic().to_string())
-            .collect::<Vec<String>>();
+            .unwrap_or(&DescribeTopicPartitionsRequestV0::default())
+            .topic_names();
 
         let metadata =
             File::open("/tmp/kraft-combined-logs/__cluster_metadata-0/00000000000000000000.log")

@@ -205,6 +205,14 @@ impl DescribeTopicPartitionsRequestV0 {
     pub fn topics(&self) -> &CompactArray<Topic> {
         &self.topics
     }
+
+    pub fn topic_names(&self) -> Vec<String> {
+        self.topics
+            .to_vec()
+            .iter()
+            .map(|topic| topic.topic().to_string())
+            .collect()
+    }
 }
 
 impl FromBytes for DescribeTopicPartitionsRequestV0 {
@@ -234,6 +242,17 @@ impl FromBytes for DescribeTopicPartitionsRequestV0 {
             cursor,
             tag,
         })
+    }
+}
+
+impl Default for DescribeTopicPartitionsRequestV0 {
+    fn default() -> Self {
+        DescribeTopicPartitionsRequestV0 {
+            topics: CompactArray::new(),
+            response_partiotion_limit: 0,
+            cursor: u8::MAX,
+            tag: CompactArray::new(),
+        }
     }
 }
 

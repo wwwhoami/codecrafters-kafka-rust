@@ -10,7 +10,6 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
-use uuid::Uuid;
 
 use crate::protocol::{
     bytes::{FromBytes, ToBytes},
@@ -26,7 +25,7 @@ use crate::protocol::{
 
 use crate::Result;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ServerAsync {
     address: String,
     metadata: Arc<ClusterMetadata>,
@@ -238,25 +237,6 @@ impl Connection {
             DescribeTopicPartiotionsResponseBodyV0::new(
                 0,
                 CompactArray::from_vec(topics),
-                u8::MAX,
-                CompactArray::new(),
-            ),
-        )
-    }
-
-    fn build_unknown_topic_response(topic_name: &str) -> ResponseBody {
-        ResponseBody::DescribeTopicPartiotionsResponseV0(
-            DescribeTopicPartiotionsResponseBodyV0::new(
-                0,
-                CompactArray::from_vec(vec![Topic::new(
-                    ErrorCode::UnknownTopicOrPartition,
-                    CompactString::from_str(topic_name),
-                    Uuid::nil(),
-                    false,
-                    CompactArray::new(),
-                    0,
-                    CompactArray::new(),
-                )]),
                 u8::MAX,
                 CompactArray::new(),
             ),

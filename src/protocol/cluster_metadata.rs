@@ -13,7 +13,7 @@ use std::{
 
 use crate::{protocol::primitives::UnsignedVarInt, Result};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ClusterMetadata {
     batches: BTreeMap<i64, Batch>,
 }
@@ -715,4 +715,3 @@ impl ToBytes for PartitionRecordValue {
         bytes.freeze()
     }
 }
-

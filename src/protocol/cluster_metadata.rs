@@ -13,7 +13,7 @@ use std::{
 
 use crate::{protocol::primitives::UnsignedVarInt, Result};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ClusterMetadata {
     batches: BTreeMap<i64, Batch>,
 }
@@ -57,6 +57,13 @@ impl ClusterMetadata {
             .flat_map(|batch| batch.find_partition_records_by_topic_uuid(topic_uuid))
             .collect()
     }
+
+    pub fn find_partition_record_ids_by_topic_uuid(&self, topic_uuid: uuid::Uuid) -> Vec<i32> {
+        self.find_partition_records_by_topic_uuid(topic_uuid)
+            .iter()
+            .map(|pr| pr.partition_id())
+            .collect::<Vec<i32>>()
+    }
 }
 
 impl TryFrom<File> for ClusterMetadata {
@@ -97,7 +104,7 @@ impl TryFrom<File> for ClusterMetadata {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct Batch {
     base_offset: i64,
     batch_length: i32,
@@ -269,7 +276,7 @@ impl ToBytes for Batch {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Record {
     record_length: VarInt,
     attributes: u8,
@@ -346,7 +353,7 @@ impl TryFrom<&mut bytes::Bytes> for Record {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct RecordValue {
     frame_version: i8,
     record_type: i8,
@@ -397,7 +404,7 @@ impl ToBytes for RecordValue {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum RecordValueByType {
     Feature(FeatureRecordValue),
     Topic(TopicRecordValue),
@@ -451,7 +458,7 @@ impl ToBytes for RecordValueByType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FeatureRecordValue {
     name: String,
     feature_level: i16,
@@ -494,7 +501,7 @@ impl ToBytes for FeatureRecordValue {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TopicRecordValue {
     name: String,
     topic_uuid: uuid::Uuid,
@@ -552,7 +559,7 @@ impl ToBytes for TopicRecordValue {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PartitionRecordValue {
     partition_id: i32,
     topic_uuid: uuid::Uuid,

@@ -2,6 +2,7 @@ use std::{
     fs::File,
     io::{BufReader, Read},
     net::SocketAddr,
+    sync::Arc,
 };
 
 use bytes::{Bytes, BytesMut};
@@ -28,12 +29,25 @@ use crate::Result;
 #[derive(Debug, Clone)]
 pub struct ServerAsync {
     address: String,
+    metadata: Arc<ClusterMetadata>,
 }
 
 impl ServerAsync {
-    pub fn new(address: &str) -> Self {
-        Self {
-            address: address.to_string(),
+    pub fn new(address: &str) -> Result<Self> {
+        let metadata =
+            File::open("/tmp/kraft-combined-logs/__cluster_metadata-0/00000000000000000000.log")
+                .map_err(|e| anyhow::anyhow!("failed to read cluster metadata {}", e))
+                .and_then(|file| {
+                    ClusterMetadata::try_from(file)
+                        .map_err(|e| anyhow::anyhow!("failed to parse cluster metadata: {}", e))
+                });
+
+        match metadata {
+            Ok(metadata) => Ok(ServerAsync {
+                address: address.to_string(),
+                metadata: Arc::new(metadata),
+            }),
+            Err(e) => Err(anyhow::anyhow!("failed to initialize server: {}", e).into()),
         }
     }
 
@@ -45,7 +59,7 @@ impl ServerAsync {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    let conn = Connection::new(stream).await?;
+                    let conn = Connection::new(stream, Arc::clone(&self.metadata)).await?;
 
                     tokio::spawn(async move {
                         conn.handle().await;
@@ -62,12 +76,18 @@ impl ServerAsync {
 struct Connection {
     stream: TcpStream,
     peer_addr: SocketAddr,
+    metadata: Arc<ClusterMetadata>,
 }
 
 impl Connection {
-    async fn new(stream: TcpStream) -> Result<Self> {
+    async fn new(stream: TcpStream, metadata: Arc<ClusterMetadata>) -> Result<Self> {
         let peer_addr = stream.peer_addr()?;
-        Ok(Connection { stream, peer_addr })
+
+        Ok(Connection {
+            stream,
+            peer_addr,
+            metadata,
+        })
     }
 
     async fn write_response(&mut self, response: ResponseV0) -> std::io::Result<()> {
@@ -114,7 +134,7 @@ impl Connection {
 
     fn build_response(&self, request: &RequestV0) -> ResponseV0 {
         let response_header = Self::build_response_header(request);
-        let response_body = Self::build_response_body(request);
+        let response_body = self.build_response_body(request);
         let message_size =
             response_body.to_be_bytes().len() as i32 + response_header.to_be_bytes().len() as i32;
 
@@ -135,13 +155,13 @@ impl Connection {
         }
     }
 
-    fn build_response_body(request: &RequestV0) -> ResponseBody {
+    fn build_response_body(&self, request: &RequestV0) -> ResponseBody {
         match request.header().request_api_key() {
             ApiKey::ApiVersions => Self::build_api_versions_response(request),
             ApiKey::DescribeTopicPartitions => {
-                Self::build_describe_topic_partitions_response(request)
+                self.build_describe_topic_partitions_response(request)
             }
-            ApiKey::Fetch => Self::build_fetch_response(request),
+            ApiKey::Fetch => self.build_fetch_response(request),
         }
     }
 
@@ -168,75 +188,60 @@ impl Connection {
         }
     }
 
-    fn build_describe_topic_partitions_response(request: &RequestV0) -> ResponseBody {
+    fn build_describe_topic_partitions_response(&self, request: &RequestV0) -> ResponseBody {
         let topic_names = request
             .body()
             .as_describe_topic_partitions_request_v0()
             .unwrap_or(&DescribeTopicPartitionsRequestV0::default())
             .topic_names();
 
-        let metadata =
-            File::open("/tmp/kraft-combined-logs/__cluster_metadata-0/00000000000000000000.log")
-                .map_err(|e| anyhow::anyhow!("failed to read cluster metadata {}", e))
-                .and_then(|file| {
-                    ClusterMetadata::try_from(file)
-                        .map_err(|e| anyhow::anyhow!("failed to parse cluster metadata: {}", e))
-                });
+        let topics = topic_names
+            .into_iter()
+            .map(|topic_name| {
+                let topic_records = self.metadata.find_topic_records_by_topic(&topic_name);
 
-        match metadata {
-            Ok(metadata) => {
-                let topics = topic_names
-                    .into_iter()
-                    .map(|topic_name| {
-                        let topic_records = metadata.find_topic_records_by_topic(&topic_name);
+                if let Some(record) = topic_records.first() {
+                    let topic_uuid = record
+                        .record_value()
+                        .value()
+                        .as_topic_record()
+                        .unwrap()
+                        .topic_uuid();
 
-                        if let Some(record) = topic_records.first() {
-                            let topic_uuid = record
-                                .record_value()
-                                .value()
-                                .as_topic_record()
-                                .unwrap()
-                                .topic_uuid();
+                    let partition_records = self
+                        .metadata
+                        .find_partition_records_by_topic_uuid(topic_uuid);
 
-                            let partition_records =
-                                metadata.find_partition_records_by_topic_uuid(topic_uuid);
+                    let partitions = CompactArray::from_vec(
+                        partition_records
+                            .into_iter()
+                            .map(Partition::from)
+                            .collect::<Vec<Partition>>(),
+                    );
 
-                            let partitions = CompactArray::from_vec(
-                                partition_records
-                                    .into_iter()
-                                    .map(Partition::from)
-                                    .collect::<Vec<Partition>>(),
-                            );
-
-                            Topic::new(
-                                ErrorCode::None,
-                                CompactString::from_str(&topic_name),
-                                topic_uuid,
-                                false,
-                                partitions,
-                                0,
-                                CompactArray::new(),
-                            )
-                        } else {
-                            Topic::from_unknown_topic(&topic_name)
-                        }
-                    })
-                    .collect::<Vec<Topic>>();
-
-                ResponseBody::DescribeTopicPartiotionsResponseV0(
-                    DescribeTopicPartiotionsResponseBodyV0::new(
+                    Topic::new(
+                        ErrorCode::None,
+                        CompactString::from_str(&topic_name),
+                        topic_uuid,
+                        false,
+                        partitions,
                         0,
-                        CompactArray::from_vec(topics),
-                        u8::MAX,
                         CompactArray::new(),
-                    ),
-                )
-            }
-            Err(e) => {
-                println!("error reading cluster metadata: {}", e);
-                Self::build_unknown_topic_response("unknown")
-            }
-        }
+                    )
+                } else {
+                    Topic::from_unknown_topic(&topic_name)
+                }
+            })
+            .collect::<Vec<Topic>>();
+
+        ResponseBody::DescribeTopicPartiotionsResponseV0(
+            DescribeTopicPartiotionsResponseBodyV0::new(
+                0,
+                CompactArray::from_vec(topics),
+                u8::MAX,
+                CompactArray::new(),
+            ),
+        )
     }
 
     fn build_unknown_topic_response(topic_name: &str) -> ResponseBody {
@@ -258,7 +263,7 @@ impl Connection {
         )
     }
 
-    fn build_fetch_response(request: &RequestV0) -> ResponseBody {
+    fn build_fetch_response(&self, request: &RequestV0) -> ResponseBody {
         let topic_id = request
             .body()
             .as_fetch_request_v16()
@@ -273,25 +278,7 @@ impl Connection {
             return ResponseBody::FetchResponseV16(FetchResponseBodyV16::default());
         }
 
-        let metadata =
-            File::open("/tmp/kraft-combined-logs/__cluster_metadata-0/00000000000000000000.log")
-                .map_err(|e| anyhow::anyhow!("failed to read cluster metadata {}", e))
-                .and_then(|file| {
-                    ClusterMetadata::try_from(file)
-                        .map_err(|e| anyhow::anyhow!("failed to parse cluster metadata: {}", e))
-                });
-
-        if metadata.is_err() {
-            println!(
-                "Error reading cluster metadata: {}",
-                metadata.as_ref().err().unwrap()
-            );
-
-            return ResponseBody::FetchResponseV16(FetchResponseBodyV16::unknown_topic(topic_id));
-        }
-
-        let metadata = metadata.unwrap();
-        let topic_records = metadata.find_topic_records_by_id(&topic_id);
+        let topic_records = self.metadata.find_topic_records_by_id(&topic_id);
 
         if topic_records.is_empty() {
             println!("No topic records found for topic ID: {}", topic_id);
@@ -313,11 +300,9 @@ impl Connection {
             return ResponseBody::FetchResponseV16(FetchResponseBodyV16::empty_topic(topic_id));
         }
 
-        let partition_ids = metadata
-            .find_partition_records_by_topic_uuid(topic_id)
-            .iter()
-            .map(|pr| pr.partition_id())
-            .collect::<Vec<i32>>();
+        let partition_ids = self
+            .metadata
+            .find_partition_record_ids_by_topic_uuid(topic_id);
 
         match &partition_ids.first() {
             Some(partition_id) => {
@@ -328,7 +313,7 @@ impl Connection {
                 let file = File::open(filename);
                 match file {
                     Err(e) => {
-                        println!(
+                        eprintln!(
                             "Failed to open file for topic: {}, partition: {}, error: {}",
                             topic_name, partition_id, e
                         );

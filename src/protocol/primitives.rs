@@ -294,7 +294,7 @@ impl ToBytes for CompactRecords {
 
 // VarInt encoding/decoding follows the variable-length zig-zag encoding scheme
 // from Google Protocol Buffers.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct VarInt {
     value: i32,
 }

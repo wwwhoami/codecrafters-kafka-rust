@@ -1,7 +1,7 @@
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::{
-    bytes::FromBytes,
+    bytes::{FromBytes, ToBytes},
     primitives::{CompactArray, CompactString, VarInt, INT32},
 };
 
@@ -75,31 +75,35 @@ impl TryFrom<File> for ClusterMetadata {
         })?;
         let mut bytes = Bytes::from(vec);
 
-        while let Ok(base_offset) = bytes.try_get_i64() {
-            let batch_length = bytes.try_get_i32()?;
-
-            let mut contents = bytes.split_to(batch_length as usize);
-
-            batches.insert(
-                base_offset,
-                Batch::try_from(&mut contents).map_err(|e| {
-                    std::io::Error::new(
+        loop {
+            match Batch::try_from(&mut bytes) {
+                Ok(batch) => {
+                    batches.insert(batch.base_offset, batch);
+                }
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                        // End of file reached, break the loop
+                        break;
+                    }
+                    return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("failed to parse batch from contents: {}", e),
-                    )
-                })?,
-            );
+                        format!("failed to parse batch: {}", e),
+                    ));
+                }
+            }
         }
 
         Ok(ClusterMetadata { batches })
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Batch {
+    base_offset: i64,
+    batch_length: i32,
     partition_leader_epoch: i32,
     magic_byte: u8,
-    crc: i32,
+    crc: u32,
     attributes: u16,
     last_offset_delta: i32,
     base_timestamp: i64,
@@ -162,9 +166,23 @@ impl TryFrom<&mut bytes::Bytes> for Batch {
     type Error = std::io::Error;
 
     fn try_from(bytes: &mut bytes::Bytes) -> std::result::Result<Self, Self::Error> {
+        let base_offset = bytes.try_get_i64().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("failed to parse base offset: {}", e),
+            )
+        })?;
+        let batch_length = bytes.try_get_i32()?;
+        let mut bytes = bytes.split_to(batch_length as usize);
+
         let partition_leader_epoch = bytes.try_get_i32()?;
         let magic_byte = bytes.try_get_u8()?;
-        let crc = bytes.try_get_i32()?;
+        let crc = crc_checksum(&mut bytes).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("failed to compute CRC: {}", e),
+            )
+        })?;
         let attributes = bytes.try_get_u16()?;
         let last_offset_delta = bytes.try_get_i32()?;
         let base_timestamp = bytes.try_get_i64()?;
@@ -177,7 +195,7 @@ impl TryFrom<&mut bytes::Bytes> for Batch {
         let mut records = Vec::with_capacity(records_length as usize);
 
         for _ in 0..records_length {
-            let record = Record::try_from(&mut *bytes).map_err(|e| {
+            let record = Record::try_from(&mut bytes).map_err(|e| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("failed to parse record from batch: {}", e),
@@ -188,6 +206,8 @@ impl TryFrom<&mut bytes::Bytes> for Batch {
         }
 
         Ok(Batch {
+            base_offset,
+            batch_length,
             partition_leader_epoch,
             magic_byte,
             crc,
@@ -200,6 +220,52 @@ impl TryFrom<&mut bytes::Bytes> for Batch {
             base_sequence,
             records,
         })
+    }
+}
+
+fn crc_checksum(bytes: &mut Bytes) -> Result<u32> {
+    let crc = bytes.try_get_u32().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("failed to parse CRC: {}", e),
+        )
+    })?;
+    let crc_checksum = crc32c::crc32c(bytes.as_ref());
+
+    if crc_checksum != crc {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("CRC mismatch: expected {}, got {}", crc, crc_checksum),
+        )
+        .into());
+    }
+
+    Ok(crc_checksum)
+}
+
+impl ToBytes for Batch {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut bytes = BytesMut::new();
+
+        bytes.put_i64(self.base_offset);
+        bytes.put_i32(self.batch_length);
+        bytes.put_i32(self.partition_leader_epoch);
+        bytes.put_u8(self.magic_byte);
+        bytes.put_u32(self.crc);
+        bytes.put_u16(self.attributes);
+        bytes.put_i32(self.last_offset_delta);
+        bytes.put_i64(self.base_timestamp);
+        bytes.put_i64(self.max_timestamp);
+        bytes.put_i64(self.producer_id);
+        bytes.put_i16(self.producer_epoch);
+        bytes.put_i32(self.base_sequence);
+
+        bytes.put_i32(self.records.len() as i32);
+        for record in &self.records {
+            bytes.extend(record.to_be_bytes());
+        }
+
+        bytes.freeze()
     }
 }
 
@@ -217,6 +283,23 @@ pub(crate) struct Record {
 impl Record {
     pub(crate) fn record_value(&self) -> &RecordValue {
         &self.record_value
+    }
+}
+
+impl ToBytes for Record {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut bytes = BytesMut::new();
+
+        bytes.extend(self.record_length.to_be_bytes());
+        bytes.put_u8(self.attributes);
+        bytes.extend(self.timestamp_delta.to_be_bytes());
+        bytes.extend(self.offset_delta.to_be_bytes());
+        bytes.extend(VarInt::from(self.key.len() as i32).to_be_bytes());
+        bytes.extend(&self.key);
+        bytes.extend(self.record_value.to_be_bytes());
+        bytes.extend(UnsignedVarInt::from(self.headers_array_count).to_be_bytes());
+
+        bytes.freeze()
     }
 }
 
@@ -301,11 +384,25 @@ impl TryFrom<&mut bytes::Bytes> for RecordValue {
     }
 }
 
+impl ToBytes for RecordValue {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut bytes = BytesMut::new();
+
+        bytes.put_i8(self.frame_version);
+        bytes.put_i8(self.record_type);
+        bytes.put_i8(self.version);
+        bytes.extend(self.value.to_be_bytes());
+
+        bytes.freeze()
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum RecordValueByType {
     Feature(FeatureRecordValue),
     Topic(TopicRecordValue),
     Partition(PartitionRecordValue),
+    Unknown(bytes::Bytes),
 }
 
 impl RecordValueByType {
@@ -314,10 +411,7 @@ impl RecordValueByType {
             12 => Ok(Self::Feature(FeatureRecordValue::try_from(bytes)?)),
             2 => Ok(Self::Topic(TopicRecordValue::try_from(bytes)?)),
             3 => Ok(Self::Partition(PartitionRecordValue::try_from(bytes)?)),
-            _ => Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("unknown record type: {}", record_type),
-            ))),
+            _ => Ok(Self::Unknown(Bytes::copy_from_slice(bytes))),
         }
     }
 
@@ -342,6 +436,17 @@ impl RecordValueByType {
             Some(v)
         } else {
             None
+        }
+    }
+}
+
+impl ToBytes for RecordValueByType {
+    fn to_be_bytes(&self) -> Bytes {
+        match self {
+            Self::Feature(feature_value) => feature_value.to_be_bytes(),
+            Self::Topic(topic_value) => topic_value.to_be_bytes(),
+            Self::Partition(partition_value) => partition_value.to_be_bytes(),
+            Self::Unknown(bytes) => bytes.clone(),
         }
     }
 }
@@ -374,6 +479,18 @@ impl TryFrom<&mut bytes::Bytes> for FeatureRecordValue {
             feature_level,
             tagged_fields_count,
         })
+    }
+}
+
+impl ToBytes for FeatureRecordValue {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut bytes = BytesMut::new();
+
+        bytes.extend(CompactString::from(self.name.clone()).to_be_bytes());
+        bytes.put_i16(self.feature_level);
+        bytes.extend(UnsignedVarInt::from(self.tagged_fields_count).to_be_bytes());
+
+        bytes.freeze()
     }
 }
 
@@ -420,6 +537,18 @@ impl TryFrom<&mut bytes::Bytes> for TopicRecordValue {
             topic_uuid,
             tagged_fields_count,
         })
+    }
+}
+
+impl ToBytes for TopicRecordValue {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut bytes = BytesMut::new();
+
+        bytes.extend(CompactString::from(self.name.clone()).to_be_bytes());
+        bytes.extend(self.topic_uuid.as_bytes());
+        bytes.extend(UnsignedVarInt::from(self.tagged_fields_count).to_be_bytes());
+
+        bytes.freeze()
     }
 }
 
@@ -553,3 +682,30 @@ impl TryFrom<&mut bytes::Bytes> for PartitionRecordValue {
         })
     }
 }
+
+impl ToBytes for PartitionRecordValue {
+    fn to_be_bytes(&self) -> Bytes {
+        let mut bytes = BytesMut::new();
+
+        bytes.put_i32(self.partition_id);
+        bytes.extend(self.topic_uuid.as_bytes());
+        bytes.extend(self.replica_array.to_be_bytes());
+        bytes.extend(self.in_sync_replica_array.to_be_bytes());
+        bytes.extend(self.removing_replicas_array.to_be_bytes());
+        bytes.extend(self.adding_replicas_array.to_be_bytes());
+        bytes.put_i32(self.leader);
+        bytes.put_i32(self.leader_epoch);
+        bytes.put_i32(self.partition_epoch);
+
+        bytes.extend(UnsignedVarInt::from(self.directories_array.len() as u32 + 1).to_be_bytes());
+
+        for directory in &self.directories_array {
+            bytes.extend(directory.as_bytes());
+        }
+
+        bytes.extend(UnsignedVarInt::from(self.tagged_fields_count).to_be_bytes());
+
+        bytes.freeze()
+    }
+}
+
